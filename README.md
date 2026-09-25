@@ -11,17 +11,15 @@ auto session = tern::connect(socket_bytes, socket_writer, {
     .username = "juliet", .domain = "example.com", .password = "…",
     .resource = "balcony",
     .start_tls = [&] { /* put TLS under the input and the output */ },
-});
-if (!session)
-  report(session.error());
-for (auto&& stanza : session->stanzas()) {     // ends where the server ends the stream
+}).value();  // throws std::bad_expected_access<tern::connect_error> if it fails
+for (auto&& stanza : session.stanzas()) {     // ends where the server ends the stream
   if (!stanza) {
     report(stanza.error());
     break;
   }
   std::visit(handle, *stanza);                  // message, presence or iq
 }
-session->send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hi"});
+session.send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hi"});
 ```
 
 - **Negotiation** (RFC 6120): the stream, STARTTLS through a hook the caller
