@@ -14,12 +14,14 @@ auto session = tern::connect(socket_bytes, socket_writer, {
 });
 if (!session)
   report(session.error());
-while (auto stanza = (*session)->receive()) {  // std::expected<std::optional<stanza>, …>
-  if (!*stanza)
-    break;                                      // the server ended the stream
-  std::visit(handle, **stanza);                 // message, presence or iq
+for (auto&& stanza : session->stanzas()) {     // ends where the server ends the stream
+  if (!stanza) {
+    report(stanza.error());
+    break;
+  }
+  std::visit(handle, *stanza);                  // message, presence or iq
 }
-(*session)->send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hi"});
+session->send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hi"});
 ```
 
 - **Negotiation** (RFC 6120): the stream, STARTTLS through a hook the caller

@@ -52,7 +52,7 @@ TEST(Stream, ScramBindAndStanzas) {
   std::string written;
   auto session = tern::connect(input, std::back_inserter(written), rfc7677());
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
-  EXPECT_EQ((*session)->jid(), "user@example.com/tern");
+  EXPECT_EQ(session->jid(), "user@example.com/tern");
   EXPECT_EQ(written, header +
                          "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-256'>" +
                          b64("n,,n=user,r=rOprNGfwEbeRWgbNEkqO") + "</auth>" +
@@ -61,19 +61,18 @@ TEST(Stream, ScramBindAndStanzas) {
                              "p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=") +
                          "</response>" + header + bind_request);
 
-  auto first = (*session)->receive();
-  ASSERT_TRUE(first.has_value() && first->has_value());
-  const auto& m = std::get<tern::message>(**first);
-  EXPECT_EQ(m.from, std::optional<std::string>("romeo@example.net/orchard"));
-  EXPECT_EQ(m.body, std::optional<std::string>("hi"));
-
   written.clear();
-  (*session)->send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hello"});
+  std::vector<tern::message> received;
+  for (auto&& one : session->stanzas()) {
+    ASSERT_TRUE(one.has_value()) << one.error().detail;
+    received.push_back(std::get<tern::message>(*one));
+    session->send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hello"});
+  }
+  // One message, and the loop ended where the server ended the stream.
+  ASSERT_EQ(received.size(), 1u);
+  EXPECT_EQ(received[0].from, std::optional<std::string>("romeo@example.net/orchard"));
+  EXPECT_EQ(received[0].body, std::optional<std::string>("hi"));
   EXPECT_EQ(written, "<message xmlns=\"jabber:client\" to=\"romeo@example.net\" type=\"chat\"><body>hello</body></message>");
-
-  auto end = (*session)->receive();
-  ASSERT_TRUE(end.has_value());
-  EXPECT_FALSE(end->has_value());  // the server ended the stream
 }
 
 // STARTTLS: nothing past <proceed/> is read before the hook has run; then

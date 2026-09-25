@@ -161,7 +161,7 @@ namespace tern::detail {
 template <class I, class S>
 class source {
  public:
-  source(I& at, const S& end) : at_(at), end_(end) {}
+  source(I at, S end) : at_(std::move(at)), end_(std::move(end)) {}
 
   std::expected<std::optional<chevron::event>, chevron::error> next() {
     for (;;) {
@@ -193,8 +193,8 @@ class source {
   }
 
  private:
-  I& at_;
-  const S& end_;
+  I at_;
+  S end_;
   chevron::parser parser_;
   bool finished_ = false;
 };
@@ -219,10 +219,7 @@ export namespace tern {
 template <class I, class S, class Out>
 class session {
  public:
-  session(I at, S end, Out out, std::string jid)
-      : at_(std::move(at)), end_(std::move(end)), out_(std::move(out)), jid_(std::move(jid)),
-        source_(std::make_unique<detail::source<I, S>>(at_, end_)) {}
-  session(session&&) = delete;
+  session(I at, S end, Out out) : source_(std::move(at), std::move(end)), out_(std::move(out)) {}
 
   // The full JID the server bound.
   const std::string& jid() const noexcept { return jid_; }
@@ -230,7 +227,7 @@ class session {
   // The next stanza, as it arrives; nothing where the stream has ended
   // cleanly; or the error.
   std::expected<std::optional<stanza>, connect_error> receive() {
-    auto one = chevron::read_one_of<message, presence, iq>(*source_);
+    auto one = chevron::read_one_of<message, presence, iq>(source_);
     if (one)
       return std::visit([](auto&& value) { return std::optional<stanza>(stanza(std::move(value))); }, std::move(*one));
     const chevron::read_error& error = one.error();
@@ -242,6 +239,13 @@ class session {
       return std::unexpected(connect_error{connect_code::closed, "", std::nullopt});
     return std::unexpected(connect_error{connect_code::xml, error.where, std::nullopt});
   }
+
+  class stanza_view;
+
+  // The stanzas as they arrive, for a range-based for loop: each a
+  // std::expected<stanza, connect_error>. The view ends where the server ends
+  // the stream, or just after an error.
+  stanza_view stanzas() { return stanza_view(*this); }
 
   // A stanza, written to the output.
   template <class Stanza>
@@ -255,16 +259,66 @@ class session {
   }
 
   // For connect(): the reading and writing it sets up, and the JID it bound.
-  detail::source<I, S>& source() { return *source_; }
+  detail::source<I, S>& source() { return source_; }
   void bound_to(std::string jid) { jid_ = std::move(jid); }
   Out& out() { return out_; }
 
  private:
-  I at_;
-  S end_;
+  detail::source<I, S> source_;
   Out out_;
   std::string jid_;
-  std::unique_ptr<detail::source<I, S>> source_;
+};
+
+template <class I, class S, class Out>
+class session<I, S, Out>::stanza_view : public std::ranges::view_interface<stanza_view> {
+ public:
+  class iterator {
+   public:
+    using value_type = std::expected<stanza, connect_error>;
+    using difference_type = std::ptrdiff_t;
+    using iterator_concept = std::input_iterator_tag;
+
+    iterator() = default;
+    explicit iterator(stanza_view* view) : view_(view) { view_->advance(); }
+    iterator(iterator&&) = default;
+    iterator& operator=(iterator&&) = default;
+
+    value_type& operator*() const { return *view_->current_; }
+    iterator& operator++() {
+      view_->advance();
+      return *this;
+    }
+    void operator++(int) { ++*this; }
+    friend bool operator==(const iterator& one, std::default_sentinel_t) { return !one.view_->current_; }
+
+   private:
+    stanza_view* view_ = nullptr;
+  };
+
+  explicit stanza_view(session& s) : session_(&s) {}
+  iterator begin() { return iterator(this); }
+  std::default_sentinel_t end() const noexcept { return {}; }
+
+ private:
+  void advance() {
+    if (failed_) {
+      current_.reset();
+      return;
+    }
+    auto next = session_->receive();
+    if (!next) {
+      current_.emplace(std::unexpected(next.error()));
+      failed_ = true;
+    } else if (*next) {
+      current_.emplace(std::move(**next));
+    } else {
+      current_.reset();
+    }
+  }
+
+  session* session_;
+  std::optional<std::expected<stanza, connect_error>> current_;
+  bool failed_ = false;
 };
 
 }  // namespace tern
@@ -452,18 +506,18 @@ export namespace tern {
 
 // Connects over `input`, a range of bytes read as far as each step needs, and
 // `output`, an output iterator of char: stream, STARTTLS if a hook is given,
-// SCRAM-SHA-256, SCRAM-SHA-1 or PLAIN, and resource binding. The session keeps
-// `input`'s iterator and the output iterator; the range has to outlive it.
+// SCRAM-SHA-256, SCRAM-SHA-1 or PLAIN, and resource binding. The session, a
+// plain value, keeps `input`'s iterator and the output iterator; the range
+// has to outlive it.
 template <std::ranges::input_range Input, std::output_iterator<char> Out>
-std::expected<std::unique_ptr<session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>>,
-              connect_error>
+std::expected<session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>, connect_error>
 connect(Input& input, Out output, const options& how) {
   using result = session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>;
-  auto s = std::make_unique<result>(std::ranges::begin(input), std::ranges::end(input), std::move(output), "");
-  detail::negotiation<result> steps(*s, how);
+  result s(std::ranges::begin(input), std::ranges::end(input), std::move(output));
+  detail::negotiation<result> steps(s, how);
   if (auto done = steps.run(); !done)
     return std::unexpected(done.error());
-  s->bound_to(std::move(steps.jid));
+  s.bound_to(std::move(steps.jid));
   return s;
 }
 
