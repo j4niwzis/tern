@@ -63,11 +63,11 @@ TEST(Stream, ScramBindAndStanzas) {
                          "</response>" + header + bind_request);
 
   written.clear();
-  std::vector<tern::message> received;
+  std::vector<tern::message::chat> received;
   for (auto&& one : session->stanzas()) {
     ASSERT_TRUE(one.has_value()) << one.error().detail;
-    received.push_back(std::get<tern::message>(*one));
-    session->send(tern::message{.to = "romeo@example.net", .type = tern::message_types::chat{}, .body = "hello"});
+    received.push_back(std::get<tern::message::chat>(std::get<tern::message_t>(*one)));
+    session->send(tern::message::chat{.to = "romeo@example.net", .body = "hello"});
   }
   // One message, and the loop ended where the server ended the stream.
   ASSERT_EQ(received.size(), 1u);
@@ -187,24 +187,22 @@ TEST(Stream, RequestAndAnswer) {
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
 
   written.clear();
-  const auto pong = session->try_request(tern::iq{.type = tern::iq_types::get{}, .payload = {chevron::to_any(ping{})}});
+  const auto pong = session->try_request(tern::iq::get{.payload = {chevron::to_any(ping{})}});
   ASSERT_TRUE(pong.has_value());
   EXPECT_EQ(pong->id, "tern-1");
   EXPECT_EQ(written, "<iq xmlns=\"jabber:client\" id=\"tern-1\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>");
 
-  const auto server_version = session->try_request<version>(tern::iq_types::get{}, version_query{});
+  const auto server_version = session->try_request<version>(tern::iq::get{}, version_query{});
   ASSERT_TRUE(server_version.has_value());
   EXPECT_EQ(server_version->name, "server");
   EXPECT_EQ(server_version->version, "1.0");
 
-  const auto refused = session->try_request<version>(tern::iq_types::get{}, version_query{});
+  const auto refused = session->try_request<version>(tern::iq::get{}, version_query{});
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().code, tern::request_code::error_reply);
   ASSERT_TRUE(refused.error().reply.has_value());
-  EXPECT_TRUE(std::holds_alternative<tern::iq_types::error>(refused.error().reply->type));
-  ASSERT_TRUE(refused.error().reply->error);
-  EXPECT_EQ(refused.error().reply->error->condition(), "feature-not-implemented");
-  EXPECT_TRUE(std::holds_alternative<tern::error_types::cancel>(*refused.error().reply->error->type));
+  EXPECT_EQ(refused.error().reply->reason.condition(), "feature-not-implemented");
+  EXPECT_TRUE(std::holds_alternative<tern::error_types::cancel>(*refused.error().reply->reason.type));
 
   // What arrived meanwhile, in order.
   std::vector<std::size_t> kinds;
@@ -212,7 +210,7 @@ TEST(Stream, RequestAndAnswer) {
   for (auto&& one : session->stanzas()) {
     ASSERT_TRUE(one.has_value());
     kinds.push_back(one->index());
-    if (const auto* m = std::get_if<tern::message>(&*one)) lang = m->lang;
+    if (const auto* m = std::get_if<tern::message_t>(&*one)) lang = std::get<tern::message::normal>(*m).lang;
   }
   EXPECT_EQ(kinds, (std::vector<std::size_t>{0, 2, 1}));  // message, the other iq, presence
   EXPECT_EQ(lang, "en");
@@ -286,13 +284,13 @@ TEST(Stream, TwoRequestsInFlight) {
   auto session = tern::try_connect(input, std::back_inserter(written), how);
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
 
-  std::optional<std::expected<tern::iq, tern::request_error>> first, second;
+  std::optional<std::expected<tern::iq::result, tern::request_error>> first, second;
   std::thread b([&] {
     pass.second.acquire();
-    second.emplace(session->try_request(tern::iq{.type = tern::iq_types::get{}}));
+    second.emplace(session->try_request(tern::iq::get{}));
   });
   std::thread a([&] {
-    first.emplace(session->try_request(tern::iq{.type = tern::iq_types::get{}}));
+    first.emplace(session->try_request(tern::iq::get{}));
     pass.second.release();
   });
   a.join();
@@ -322,13 +320,13 @@ TEST(Stream, Throwing) {
   auto how = rfc7677();
   how.plain_without_tls = true;
   auto session = tern::connect(input, std::back_inserter(written), how);
-  EXPECT_EQ(session.request(tern::iq{.type = tern::iq_types::get{}}).id, "tern-1");
+  EXPECT_EQ(session.request(tern::iq::get{}).id, "tern-1");
   try {
-    session.request(tern::iq{.type = tern::iq_types::get{}});
+    session.request(tern::iq::get{});
     ADD_FAILURE() << "an error answer was not thrown";
   } catch (const tern::request_failure& failure) {
     EXPECT_EQ(failure.error.code, tern::request_code::error_reply);
-    EXPECT_TRUE(std::holds_alternative<tern::iq_types::error>(failure.error.reply->type));
+    EXPECT_TRUE(failure.error.reply.has_value());
   }
   EXPECT_FALSE(session.receive());  // the stream ends, cleanly
 
