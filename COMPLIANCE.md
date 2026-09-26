@@ -12,7 +12,7 @@ What the RFCs require only of servers is left out.
 | 4.2 | The initiating entity opens the stream with `to` (the server's domain) and `version='1.0'` | done | `Stream.ScramBindAndStanzas` |
 | 4.3.2 | The stream is restarted, with a new header, after TLS and after SASL success | done | `Stream.StartTlsThenPlain`, `Stream.ScramBindAndStanzas` |
 | 4.4 | Closing: `</stream:stream>` sent, and the peer's closing tag waited for before the connection is closed | done: `close()` sends it, and `stanzas()` goes on until the peer's; the connection is the caller's to close after that | `Stream.StreamErrorAndClosing` |
-| 4.6 | Whitespace keepalives are accepted between stanzas | partial: white space between stanzas is skipped by the reader, untested | — |
+| 4.6 | Whitespace keepalives are accepted between stanzas | done | `Stream.FailureConditionAndKeepalives` |
 | 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | done after binding (`connect_code::stream_error`, the condition as detail); partial during negotiation, where the condition is not given | `Stream.StreamErrorAndClosing` |
 | 4.9.3.19 | `see-other-host`: reconnect to the host given | not yet | — |
 | 5.3.1 | STARTTLS used where offered; a server that requires it and a client that cannot is an error | done | `Stream.StartTlsThenPlain`, `Stream.WhatStopsIt` |
@@ -22,7 +22,7 @@ What the RFCs require only of servers is left out.
 | 6.3.10 | PLAIN not used without TLS unless explicitly allowed | done | `Stream.WhatStopsIt` |
 | 6.4.2 | SCRAM as RFC 5802/7677: nonce, salted password, proofs, the server's signature verified | done | `Sasl.*`, `Stream.ScramBindAndStanzas` |
 | 6.4.3 | Channel binding (the -PLUS mechanisms) | not yet | — |
-| 6.4.5 | SASL `<failure/>`: its condition reported | partial: the failure is reported; whether with its condition is to be checked | `Stream.WhatStopsIt` |
+| 6.4.5 | SASL `<failure/>`: its condition reported | done: `connect_code::not_authorized`, the condition as detail | `Stream.FailureConditionAndKeepalives` |
 | 6.4.1 | `<abort/>` to give up an exchange | not yet | — |
 | 7.4 | Resource binding requested, with or without a resource | done | `Stream.ScramBindAndStanzas` |
 | 7.6.2 | The resource the server assigned is the one used | done: the JID from the result | `Stream.ScramBindAndStanzas` |

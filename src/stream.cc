@@ -333,6 +333,7 @@ constexpr auto xml_schema(chevron::type<features>) {
 // name and its text, which is all negotiation needs of them.
 struct nonza {
   std::string uri, local, text;
+  std::string first_child;  // the name of its first child element: a failure's condition
 };
 
 }  // namespace tern::detail
@@ -1023,8 +1024,11 @@ class negotiation {
       auto next = s_.source().next();
       if (!next || !*next)
         return fail(connect_code::closed, "while negotiating");
-      if (std::holds_alternative<chevron::start_element>(**next))
+      if (const auto* start = std::get_if<chevron::start_element>(&**next)) {
+        if (depth == 1 && out.first_child.empty())
+          out.first_child = std::string(start->name.local);
         ++depth;
+      }
       else if (std::holds_alternative<chevron::end_element>(**next))
         --depth;
       else if (depth == 1)
@@ -1070,7 +1074,8 @@ class negotiation {
     if (!challenge)
       return std::unexpected(challenge.error());
     if (challenge->local != "challenge")
-      return fail(connect_code::not_authorized, challenge->local);
+      return fail(connect_code::not_authorized,
+                  challenge->local == "failure" ? challenge->first_child : challenge->local);
     auto reply = client.answer(text_of(challenge->text));
     if (!reply)
       return std::unexpected(connect_error{connect_code::authentication, reply.error().detail, reply.error()});
@@ -1080,7 +1085,8 @@ class negotiation {
     if (!outcome)
       return std::unexpected(outcome.error());
     if (outcome->local != "success")
-      return fail(connect_code::not_authorized, outcome->local);
+      return fail(connect_code::not_authorized,
+                  outcome->local == "failure" ? outcome->first_child : outcome->local);
     if (auto proved = client.verify(text_of(outcome->text)); !proved)
       return std::unexpected(connect_error{connect_code::authentication, proved.error().detail, proved.error()});
     return {};

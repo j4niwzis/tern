@@ -497,3 +497,42 @@ TEST(Stream, PresenceAndSubscriptions) {
             "<presence xmlns=\"jabber:client\" type=\"unavailable\"/>"
             "</stream:stream>");
 }
+
+// RFC 6120, 6.5: a SASL failure says its condition; 4.6: white space between
+// stanzas is a keepalive, and nothing more.
+TEST(Stream, FailureConditionAndKeepalives) {
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-256</mechanism>"
+        "</mechanisms></stream:features><failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><account-disabled/>"
+        "<text xml:lang='en'>Call 212-555-1212 for assistance.</text></failure>";
+    std::string_view input = server;
+    std::string written;
+    const auto session = tern::try_connect(input, std::back_inserter(written), rfc7677());
+    ASSERT_FALSE(session.has_value());
+    EXPECT_EQ(session.error().code, tern::connect_code::not_authorized);
+    EXPECT_EQ(session.error().detail, "account-disabled");
+  }
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+        "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+        "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+        bind_features + bind_result +
+        " \n <message from='romeo@example.net' type='chat'><body>one</body></message>\n\n  "
+        "<message from='romeo@example.net' type='chat'><body>two</body></message> </stream:stream>";
+    std::string_view input = server;
+    std::string written;
+    auto how = rfc7677();
+    how.plain_without_tls = true;
+    auto session = tern::connect(input, std::back_inserter(written), how);
+    std::size_t messages = 0;
+    for (auto&& one : session.stanzas()) {
+      ASSERT_TRUE(one.has_value()) << one.error().detail;
+      ++messages;
+    }
+    EXPECT_EQ(messages, 2u);
+  }
+}
