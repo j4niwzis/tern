@@ -394,6 +394,13 @@ struct request_failure : std::runtime_error {
   request_error error;
 };
 
+// A query: a payload that says what kind of request carries it and what the
+// answer is read into.
+//   struct version_query { using kind = tern::iq::get; using answer = server_version; };
+template <class Q>
+concept query = chevron::described<Q> && chevron::described<typename Q::answer> &&
+                (std::same_as<typename Q::kind, iq::get> || std::same_as<typename Q::kind, iq::set>);
+
 // A stream that is authenticated and bound: stanzas in, stanzas out.
 template <class I, class S, class Out>
 class session {
@@ -478,18 +485,19 @@ class session {
     }
   }
 
-  // The same, typed: the payload written from a type with a chevron schema,
-  // the answer's first child read into another.
-  template <chevron::described Answer, class Question, chevron::described Payload>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  std::expected<Answer, request_error> try_request(Question question, const Payload& payload) {
-    question.payload = {chevron::to_any(payload)};
+  // The same, typed: a query that says what kind of request it is and what
+  // comes back -- using kind = tern::iq::get; using answer = the type -- is
+  // sent as the payload, and the answer's first child read into its answer.
+  template <query Query>
+  std::expected<typename Query::answer, request_error> try_request(const Query& payload,
+                                                                   std::optional<std::string> to = std::nullopt) {
+    typename Query::kind question{.to = std::move(to), .payload = {chevron::to_any(payload)}};
     auto answer = try_request(std::move(question));
     if (!answer)
       return std::unexpected(std::move(answer).error());
-    std::optional<Answer> typed;
+    std::optional<typename Query::answer> typed;
     if (!answer->payload.empty()) {
-      if (auto read = chevron::from_any<Answer>(answer->payload.front()))
+      if (auto read = chevron::from_any<typename Query::answer>(answer->payload.front()))
         typed = std::move(*read);
     }
     if (!typed)
@@ -509,10 +517,9 @@ class session {
     return std::move(*answer);
   }
 
-  template <chevron::described Answer, class Question, chevron::described Payload>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  Answer request(Question question, const Payload& payload) {
-    auto answer = try_request<Answer>(std::move(question), payload);
+  template <query Query>
+  typename Query::answer request(const Query& payload, std::optional<std::string> to = std::nullopt) {
+    auto answer = try_request(payload, std::move(to));
     if (!answer)
       throw request_failure(std::move(answer).error());
     return std::move(*answer);
