@@ -1,6 +1,6 @@
 # tern
 
-An XMPP client library for C++23, as modules. It speaks over a transport of
+An XMPP client library for C++26, as modules. It speaks over a transport of
 the caller's -- a type, with nothing erased: what it can do is found by
 concepts at compile time -- and runs nothing of its own: with a blocking
 socket in a thread, or with coroutines that suspend inside the transport, the

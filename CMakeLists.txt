@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 4.3.4 FATAL_ERROR)
 # tern: an XMPP client library, as C++23 modules -- over any input range of
 # bytes, with the control flow the caller's.
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 project(tern VERSION 0.1 LANGUAGES CXX)
@@ -23,7 +23,7 @@ endif()
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG ef13469f3d42e7dc5873a332f58a3dcb03775703
+  GIT_TAG ae282d036df95362af7707c46c40dcd8047f6404
   LICENSE LicenseRef-proprietary
   SYSTEM NEVER
   TARGETS chevron)
@@ -32,7 +32,7 @@ cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 578d82d9c280e15c209e4cc71ddd227f47423bcb
+  GIT_TAG 998a915e2edb45e883f0a497b5fbae54d5406620
   LICENSE LicenseRef-proprietary
   SYSTEM NEVER
   TARGETS alef_precis)
@@ -50,7 +50,7 @@ function(tern_module target file)
   add_library(${target})
   target_sources(${target}
     PUBLIC FILE_SET CXX_MODULES BASE_DIRS src FILES ${file})
-  target_compile_features(${target} PUBLIC cxx_std_23)
+  target_compile_features(${target} PUBLIC cxx_std_26)
   if(ARGN)
     target_link_libraries(${target} PUBLIC ${ARGN})
   endif()
