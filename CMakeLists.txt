@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 project(tern VERSION 0.1 LANGUAGES CXX)
 
 option(TERN_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
+option(TERN_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 
 if(NOT COMMAND cme_find_package)
   set(CME_WITHOUT_PROVIDER ON)
@@ -72,4 +73,10 @@ add_library(tern::tern ALIAS tern)
 if(TERN_TESTS)
   enable_testing()
   add_subdirectory(test)
+endif()
+
+# tern against a real server, over a socket or openssl s_client (POSIX).
+if(TERN_EXAMPLES AND UNIX)
+  add_executable(tern-live examples/live.cc)
+  target_link_libraries(tern-live PRIVATE tern)
 endif()

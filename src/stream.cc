@@ -498,8 +498,16 @@ class source {
         return one;
       if (finished_)
         return one;
+      // The end is asked about only where a byte is needed: over a socket,
+      // asking is waiting for the peer, and after the '>' that ends a
+      // stanza there may be nothing more for a long while.
       std::string piece;
-      while (at_ != end_) {
+      bool ended = false;
+      for (;;) {
+        if (at_ == end_) {
+          ended = true;
+          break;
+        }
         const char unit = static_cast<char>(*at_);
         ++at_;
         piece.push_back(unit);
@@ -507,7 +515,7 @@ class source {
           break;
       }
       parser_.feed(piece);
-      if (at_ == end_ && piece.empty()) {
+      if (ended && piece.empty()) {
         parser_.finish();
         finished_ = true;
       }

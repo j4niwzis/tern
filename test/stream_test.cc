@@ -556,6 +556,51 @@ TEST(Stream, NegotiationErrors) {
   }
 }
 
+// Input as a socket gives it: asking whether it has ended waits for the
+// peer. What a request needs is read, and nothing is asked past it.
+struct live_input {
+  std::string_view data;
+  std::size_t at = 0;
+  bool asked_past = false;
+
+  struct iterator {
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+    live_input* in = nullptr;
+    char operator*() const { return in->data[in->at]; }
+    iterator& operator++() {
+      ++in->at;
+      return *this;
+    }
+    void operator++(int) { ++*this; }
+    bool operator==(std::default_sentinel_t) const {
+      if (in->at == in->data.size())
+        in->asked_past = true;
+      return in->at == in->data.size();
+    }
+  };
+  iterator begin() { return {this}; }
+  std::default_sentinel_t end() const { return {}; }
+};
+
+TEST(Stream, NoReadingAhead) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result + "<iq type='result' id='tern-1' from='example.com'/>";
+  live_input input{server};
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  EXPECT_FALSE(input.asked_past);
+  const auto pong = session.try_request(tern::iq::get{.to = "example.com"});
+  EXPECT_TRUE(pong.has_value());
+  EXPECT_FALSE(input.asked_past);  // the answer's '>' was the last byte read
+}
+
 // RFC 6121, 3 and 4: subscriptions to bare JIDs, initial presence, and
 // unavailable presence before the stream ends.
 TEST(Stream, PresenceAndSubscriptions) {
