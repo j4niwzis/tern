@@ -85,6 +85,17 @@ TEST(Xep, Carbons) {
   const auto& inner = received.forwarded.message->as<tern::basic::message_chat<tern::forward::plain>>();
   EXPECT_EQ(inner.body, "What man art thou");
   EXPECT_EQ(inner.from, "juliet@capulet.example/balcony");
+
+  // The same without nesting: the kind, its payload, and any kind at all.
+  const auto* normal = tern::get_if<tern::message::normal>(*one);
+  ASSERT_NE(normal, nullptr);
+  EXPECT_EQ(tern::get_if<tern::message::chat>(*one), nullptr);
+  EXPECT_EQ(tern::get_if<tern::iq::result>(*one), nullptr);
+  const auto* carbon = tern::find<tern::carbons::received>(*normal);
+  ASSERT_NE(carbon, nullptr);
+  EXPECT_EQ(tern::find<tern::carbons::received>(*one), carbon);
+  EXPECT_EQ(tern::find<tern::delay>(*one), nullptr);
+  EXPECT_EQ(tern::visit([](const auto& kind) { return kind.from; }, *one), "user@example.com");
 }
 
 // XEP-0313: a page of the archive, its messages taken by the query's id.

@@ -2866,3 +2866,60 @@ constexpr session<range_transport<Input, Out>, P, Handlers, Scheduler> connect(I
 }
 
 }  // namespace tern
+
+export namespace tern {
+
+namespace detail {
+template <class K, class V>
+inline constexpr bool in_variant = false;
+template <class K, class... A>
+inline constexpr bool in_variant<K, std::variant<A...>> = (std::same_as<K, A> || ...);
+}  // namespace detail
+
+// What was received, without nesting std::visit: f called with the kind of
+// stanza itself -- message::chat, presence::subscribe, iq::result... -- of
+// any protocol's stanza_t.
+template <class F, class... Families>
+constexpr decltype(auto) visit(F&& f, const std::variant<Families...>& stanza) {
+  return std::visit([&](const auto& family) -> decltype(auto) { return std::visit(f, family); }, stanza);
+}
+template <class F, class... Families>
+constexpr decltype(auto) visit(F&& f, std::variant<Families...>& stanza) {
+  return std::visit([&](auto& family) -> decltype(auto) { return std::visit(f, family); }, stanza);
+}
+
+// The stanza as that kind, where it is one; nothing otherwise.
+//   if (const auto* chat = tern::get_if<tern::message::chat>(one)) ...
+template <class Kind, class... Families>
+constexpr const Kind* get_if(const std::variant<Families...>& stanza) {
+  const Kind* out = nullptr;
+  (
+      [&] {
+        if constexpr (detail::in_variant<Kind, Families>)
+          if (const auto* family = std::get_if<Families>(&stanza))
+            out = std::get_if<Kind>(family);
+      }(),
+      ...);
+  return out;
+}
+
+// What a stanza carries, of that type, where it carries one: the first.
+//   if (const auto* copy = tern::find<tern::carbons::received>(*message)) ...
+template <class T, class Stanza>
+  requires requires(const Stanza& one) { one.payload; }
+constexpr const T* find(const Stanza& one) {
+  for (const auto& carried : one.payload) {
+    if constexpr (std::remove_cvref_t<decltype(carried)>::template can_hold<T>)
+      if (const T* got = carried.template get_if<T>())
+        return got;
+  }
+  return nullptr;
+}
+
+// The same through a stanza_t, whatever its kind.
+template <class T, class... Families>
+constexpr const T* find(const std::variant<Families...>& stanza) {
+  return tern::visit([](const auto& kind) { return tern::find<T>(kind); }, stanza);
+}
+
+}  // namespace tern
