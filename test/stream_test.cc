@@ -470,6 +470,92 @@ TEST(Stream, RosterAndPushes) {
   EXPECT_EQ(written.find("push2"), std::string::npos) << written;
 }
 
+// RFC 6121, 2.6: the roster kept between sessions -- asked for from its
+// version where the server versions rosters, pushes applied, and an empty
+// answer leaving it as it is.
+TEST(Stream, RosterVersioning) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/>"
+      "<ver xmlns='urn:xmpp:features:rosterver'/></stream:features>" + bind_result +
+      "<iq type='result' id='tern-1'><query xmlns='jabber:iq:roster' ver='ver7'>"
+      "<item jid='nurse@example.com' subscription='both'/><item jid='romeo@example.net' subscription='none'/>"
+      "</query></iq>"
+      "<iq type='set' id='push1'><query xmlns='jabber:iq:roster' ver='ver8'>"
+      "<item jid='nurse@example.com' subscription='remove'/></query></iq>"
+      "<iq type='result' id='tern-2'/></stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  EXPECT_TRUE(session.roster_versioning());
+  written.clear();
+  tern::roster_cache cache;
+  session.sync(cache);
+  EXPECT_NE(written.find("ver=\"\""), std::string::npos) << written;
+  EXPECT_EQ(cache.ver, "ver7");
+  EXPECT_EQ(cache.items.size(), 2u);
+
+  const auto push = session.try_receive();
+  ASSERT_TRUE(push.has_value() && push->has_value());
+  const auto* iq = std::get_if<tern::iq_t>(&**push);
+  ASSERT_NE(iq, nullptr);
+  const auto* set = std::get_if<tern::iq::set>(iq);
+  ASSERT_NE(set, nullptr);
+  EXPECT_TRUE(cache.apply(*set));
+  EXPECT_EQ(cache.ver, "ver8");
+  EXPECT_EQ(cache.items.size(), 1u);
+  EXPECT_TRUE(cache.items.contains("romeo@example.net"));
+
+  written.clear();
+  session.sync(cache);  // nothing changed: the empty answer
+  EXPECT_NE(written.find("ver=\"ver8\""), std::string::npos) << written;
+  EXPECT_EQ(cache.ver, "ver8");
+  EXPECT_EQ(cache.items.size(), 1u);
+}
+
+// RFC 6120, 5.4.3.3 and 7.6.2.2: a STARTTLS failure closes this side of the
+// stream; a refused bind says its whole error.
+TEST(Stream, NegotiationErrors) {
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls>"
+        "</stream:features><failure xmlns='urn:ietf:params:xml:ns:xmpp-tls'/></stream:stream>";
+    std::string_view input = server;
+    std::string written;
+    auto how = rfc7677();
+    how.start_tls = [] {};
+    const auto session = tern::try_connect(input, std::back_inserter(written), how);
+    ASSERT_FALSE(session.has_value());
+    EXPECT_EQ(session.error().code, tern::connect_code::tls_refused);
+    EXPECT_TRUE(written.ends_with("</stream:stream>")) << written;
+  }
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+        "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+        "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") + bind_features +
+        "<iq type='error' id='bind_1'><error type='modify'>"
+        "<conflict xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>";
+    std::string_view input = server;
+    std::string written;
+    auto how = rfc7677();
+    how.plain_without_tls = true;
+    const auto session = tern::try_connect(input, std::back_inserter(written), how);
+    ASSERT_FALSE(session.has_value());
+    EXPECT_EQ(session.error().code, tern::connect_code::bind_refused);
+    EXPECT_EQ(session.error().detail, "conflict");
+    ASSERT_TRUE(session.error().stanza.has_value());
+    EXPECT_EQ(session.error().stanza->condition(), "conflict");
+  }
+}
+
 // RFC 6121, 3 and 4: subscriptions to bare JIDs, initial presence, and
 // unavailable presence before the stream ends.
 TEST(Stream, PresenceAndSubscriptions) {

@@ -17,7 +17,7 @@ What the RFCs require only of servers is left out.
 | 4.9.3.19 | `see-other-host`: reconnect to the host given | done: the host (and port) in `connect_error::other_host`; tern owns no socket, so the caller reconnects | `Stream.SeeOtherHost` |
 | 5.3.1 | STARTTLS used where offered; a server that requires it and a client that cannot is an error | done | `Stream.StartTlsThenPlain`, `Stream.WhatStopsIt` |
 | 5.4.3.3 | After `<proceed/>`, nothing is read or written before TLS is in place | done: the hook runs before anything past `<proceed/>` is read | `Stream.StartTlsThenPlain` |
-| 5.4.3.3 | After `<failure/>` for STARTTLS the stream is closed | partial: negotiation fails; the caller closes | — |
+| 5.4.3.3 | After `<failure/>` for STARTTLS the stream is closed | done: `</stream:stream>` written, `tls_refused` reported | `Stream.NegotiationErrors` |
 | 6.3.3 | Mechanisms chosen by the client's preference among those offered | done: SCRAM-SHA-256, then SCRAM-SHA-1, then PLAIN | `Stream.ScramBindAndStanzas` |
 | 6.3.10 | PLAIN not used without TLS unless explicitly allowed | done | `Stream.WhatStopsIt` |
 | 6.4.2 | SCRAM as RFC 5802/7677: nonce, salted password, proofs, the server's signature verified | done | `Sasl.*`, `Stream.ScramBindAndStanzas` |
@@ -26,7 +26,7 @@ What the RFCs require only of servers is left out.
 | 6.4.1, 6.4.5 | `<abort/>` to give up an exchange | done: a challenge SCRAM cannot take is answered with `<abort/>`, and the `<failure><aborted/></failure>` read | `Stream.SaslAbort` |
 | 7.4 | Resource binding requested, with or without a resource | done | `Stream.ScramBindAndStanzas` |
 | 7.6.2 | The resource the server assigned is the one used | done: the JID from the result | `Stream.ScramBindAndStanzas` |
-| 7.6.2.2 | A `conflict` or other error to binding reported | partial: reported as bind refused, with the condition | — |
+| 7.6.2.2 | A `conflict` or other error to binding reported | done: `bind_refused`, the condition as detail and the whole `<error/>` in `connect_error::stanza` | `Stream.NegotiationErrors` |
 | 8.1 | Stanzas have exactly `to`, `from`, `id`, `type`, `xml:lang` as attributes | done | `Stream.RequestAndAnswer` |
 | 8.1.3 | An `id` on every iq | done: made up where the request has none | `Stream.RequestAndAnswer` |
 | 8.2.3 | Every iq get or set gets exactly one result or error | done: handlers, else `service-unavailable` | `Stream.EveryRequestIsAnswered` |
@@ -52,7 +52,7 @@ What the RFCs require only of servers is left out.
 | --- | --- | --- | --- |
 | 2.1.3 | Roster get | done: `request<tern::query::roster>()` | `Stream.RosterAndPushes` |
 | 2.1.6 | Roster push: answered with a result, from the client's own account only | done: answered, and handed out or to its handler; a push from anyone else ignored | `Stream.RosterAndPushes` |
-| 2.6 | Roster versioning | partial: `ver` asked with and read; the stored roster is the caller's | `Stream.RosterAndPushes` |
+| 2.6 | Roster versioning | done: the `rosterver` feature seen; `tern::roster_cache` kept by the caller; `sync()` asks from its version (`ver=''` with none), keeps it on an empty answer, replaces it on a whole roster; `apply()` for pushes | `Stream.RosterVersioning` |
 | 3 | Subscription requests, approval, cancellation, unsubscribing, each to a bare JID | done: `subscribe`, `approve`, `deny`, `unsubscribe`; the state is the server's | `Stream.PresenceAndSubscriptions` |
 | 4.2 | Initial presence after the roster | done: `available()`; asking for the roster first is the caller's | `Stream.PresenceAndSubscriptions` |
 | 4.5 | Unavailable presence before closing the stream | done: `close()` sends it where presence was sent | `Stream.PresenceAndSubscriptions` |

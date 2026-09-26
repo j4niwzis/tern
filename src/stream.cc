@@ -309,6 +309,50 @@ constexpr auto xml_schema(chevron::type<roster>) {
 }
 }  // namespace query
 
+// A roster kept between sessions (RFC 6121, 2.6): what the caller stores --
+// the version it is at, and the items by JID -- and gives back to sync().
+struct roster_cache {
+  std::optional<std::string> ver;
+  std::flat_map<std::string, roster_item> items;
+
+  // A whole roster: what was kept is replaced.
+  void replace(roster whole) {
+    items.clear();
+    for (roster_item& one : whole.items) {
+      std::string key = one.jid;
+      items.insert_or_assign(std::move(key), std::move(one));
+    }
+    ver = std::move(whole.ver);
+  }
+
+  // A push (2.1.6, 2.6.3): each item added or changed, or with subscription
+  // remove dropped; and the version it brings.
+  void apply(roster push) {
+    for (roster_item& one : push.items) {
+      if (one.subscription && std::holds_alternative<tern::subscription::remove>(*one.subscription)) {
+        items.erase(one.jid);
+      } else {
+        std::string key = one.jid;
+        items.insert_or_assign(std::move(key), std::move(one));
+      }
+    }
+    if (push.ver)
+      ver = std::move(push.ver);
+  }
+
+  // The same, from the stanza: false where it is not a roster push.
+  bool apply(const iq::set& push) {
+    if (push.payload.empty() || push.payload.front().uri != roster_namespace ||
+        push.payload.front().local != "query")
+      return false;
+    auto read = chevron::from_any<roster>(push.payload.front());
+    if (!read)
+      return false;
+    apply(std::move(*read));
+    return true;
+  }
+};
+
 using message_t = std::variant<message::normal, message::chat, message::groupchat, message::headline, message::error>;
 using presence_t = std::variant<presence::available, presence::unavailable, presence::subscribe,
                                 presence::subscribed, presence::unsubscribe, presence::unsubscribed, presence::probe,
@@ -390,6 +434,10 @@ struct connect_error {
   // server sends the client instead -- a host, an IPv4 address or an IPv6
   // one in brackets, and perhaps a port. The caller reconnects there.
   std::optional<std::string> other_host{};
+  // Where the server refused binding (RFC 6120, 7.6.2.2): its <error/> --
+  // the condition (conflict, not-allowed, resource-constraint), the type and
+  // any text -- whole.
+  std::optional<stanza_error> stanza{};
 };
 
 // What the TLS layer gives for channel binding: the type and its data.
@@ -902,15 +950,50 @@ class session {
   std::expected<void, jid_error> deny(std::string_view to) { return to_bare<presence::unsubscribed>(to); }
   std::expected<void, jid_error> unsubscribe(std::string_view to) { return to_bare<presence::unsubscribe>(to); }
 
+  // The roster brought up to date (RFC 6121, 2.6). Where the server versions
+  // rosters it is asked for from the version kept -- ver='' where there is
+  // none -- and an empty answer leaves the cache as it is: nothing changed,
+  // or the changes follow as pushes, for cache.apply(). Otherwise, and
+  // wherever the whole roster comes, it replaces what was kept.
+  std::expected<void, request_error> try_sync(roster_cache& cache) {
+    query::roster asked;
+    if (roster_versioning_)
+      asked.ver = cache.ver.value_or("");
+    iq::get sent{.payload = {chevron::to_any(asked)}};
+    auto answer = try_request(std::move(sent));
+    if (!answer)
+      return std::unexpected(std::move(answer).error());
+    if (answer->payload.empty())
+      return {};
+    auto read = chevron::from_any<roster>(answer->payload.front());
+    if (!read)
+      return std::unexpected(request_error{
+          request_code::bad_answer, std::nullopt,
+          iq::error{answer->to, answer->from, answer->id, answer->lang, {}, std::move(answer->payload)}});
+    cache.replace(std::move(*read));
+    return {};
+  }
+
+  // The same, throwing a tern::request_failure.
+  void sync(roster_cache& cache) {
+    if (auto done = try_sync(cache); !done)
+      throw request_failure(std::move(done).error());
+  }
+
+  // Whether the server said it versions rosters (RFC 6121, 2.6.1).
+  bool roster_versioning() const { return roster_versioning_; }
+
   // For connect(): the reading and writing it sets up, and the JID it bound.
   detail::source<I, S>& source() { return source_; }
   void bound_to(std::string jid) { jid_ = std::move(jid); }
+  void versions_rosters(bool on) { roster_versioning_ = on; }
   Out& out() { return out_; }
 
  private:
   detail::source<I, S> source_;
   Out out_;
   std::string jid_;
+  bool roster_versioning_ = false;
   std::deque<stanza_t> pending_;
   std::size_t last_id_ = 0;
   // The requests in flight, by id: whom the answer must come from, and the
@@ -1012,7 +1095,10 @@ class negotiation {
           if (!answer)
             return std::unexpected(answer.error());
           if (answer->local != "proceed")
+          {
+            write("</stream:stream>");
             return fail(connect_code::tls_refused, answer->local);
+          }
           o_.start_tls();
           secured = true;
           s_.source().restart();
@@ -1030,11 +1116,15 @@ class negotiation {
       }
       if (!offered->bind)
         return fail(connect_code::bind_refused, "no bind offered");
+      for (const chevron::any& one : offered->other)
+        if (one.uri == "urn:xmpp:features:rosterver" && one.local == "ver")
+          roster_versioning = true;
       return bind();
     }
   }
 
   std::string jid;
+  bool roster_versioning = false;
 
  private:
   std::unexpected<connect_error> fail(connect_code code, std::string detail) const {
@@ -1179,7 +1269,8 @@ class negotiation {
     if (!read)
       return fail(connect_code::xml, "bind: " + read.error().where);
     if (const auto* refused = std::get_if<iq::error>(&*read))
-      return fail(connect_code::bind_refused, std::string(refused->reason.condition()));
+      return std::unexpected(connect_error{connect_code::bind_refused, std::string(refused->reason.condition()),
+                                           std::nullopt, std::nullopt, refused->reason});
     auto* answer = &std::get<iq::result>(*read);
     if (answer->id != "bind_1")
       return fail(connect_code::bind_refused, "not the answer to the bind");
@@ -1218,6 +1309,7 @@ try_connect(Input& input, Out output, const options& how) {
   if (auto done = steps.run(); !done)
     return std::unexpected(done.error());
   s.bound_to(std::move(steps.jid));
+  s.versions_rosters(steps.roster_versioning);
   s.yield_with(how.yield);
   s.deliver_unhandled(how.deliver_unhandled);
   return s;
