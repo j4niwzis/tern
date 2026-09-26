@@ -1,10 +1,16 @@
 // A client's stream: connecting, securing, authenticating and binding a
-// resource (RFC 6120), then stanzas in and out -- over any input range of
-// bytes and any output iterator of chars, with nothing of its own running.
+// resource (RFC 6120), then stanzas in and out (RFC 6121) -- over a transport
+// of the caller's, whose abilities (STARTTLS, channel binding) are found at
+// compile time, with nothing erased and nothing of its own running.
+//
+// Stanzas are read straight into their types. What a stanza carries is a
+// chevron::tagged of the types the session's protocol<> names, chosen by the
+// element's name and read directly; only what the protocol does not name is
+// kept as a tree, a chevron::any.
 //
 // The input is read only as far as the next thing needs, and never ahead:
-// at <proceed/> nothing more is asked of it until the caller has put TLS
-// underneath, through the hook it gave.
+// at <proceed/> nothing more is asked of it until the transport has put TLS
+// underneath.
 export module tern.stream;
 
 import std;
@@ -22,6 +28,7 @@ inline constexpr std::string_view sasl_namespace = "urn:ietf:params:xml:ns:xmpp-
 inline constexpr std::string_view bind_namespace = "urn:ietf:params:xml:ns:xmpp-bind";
 inline constexpr std::string_view xml_namespace = "http://www.w3.org/XML/1998/namespace";
 inline constexpr std::string_view stanza_errors_namespace = "urn:ietf:params:xml:ns:xmpp-stanzas";
+inline constexpr std::string_view roster_namespace = "jabber:iq:roster";
 
 // What a stanza of the error kind says went wrong (RFC 6120, 8.3): what to do
 // about it, and the condition -- an element of the stanza-errors namespace,
@@ -41,7 +48,7 @@ struct stanza_error {
 
   std::string_view condition() const {
     for (const chevron::any& one : details)
-      if (one.uri == "urn:ietf:params:xml:ns:xmpp-stanzas" && one.local != "text")
+      if (one.uri == stanza_errors_namespace && one.local != "text")
         return one.local;
     return {};
   }
@@ -49,180 +56,8 @@ struct stanza_error {
 
 constexpr auto xml_schema(chevron::type<stanza_error>) {
   using namespace chevron::members;
-  return chevron::schema<stanza_error>()
-      .name(client_namespace, "error")
-      .members(attribute(), unknown_children());
+  return chevron::schema<stanza_error>().name(client_namespace, "error").members(attribute(), unknown_children());
 }
-
-// A conversation a message belongs to (RFC 6121, 5.2.5): its identifier,
-// and the thread it was spun off from.
-struct thread {
-  std::string id;
-  std::optional<std::string> parent;
-};
-
-constexpr auto xml_schema(chevron::type<thread>) {
-  using namespace chevron::members;
-  return chevron::schema<thread>().name(client_namespace, "thread").members(text(), attribute());
-}
-
-// The stanzas, a type for each kind: what the kind can carry and nothing
-// else. What they carry beyond what is named is kept whole, in payload.
-namespace message {
-struct normal {
-  std::optional<std::string> to, from, id, lang, subject, body;
-  std::optional<tern::thread> thread;
-  std::vector<chevron::any> payload;
-};
-struct chat {
-  std::optional<std::string> to, from, id, lang, subject, body;
-  std::optional<tern::thread> thread;
-  std::vector<chevron::any> payload;
-};
-struct groupchat {
-  std::optional<std::string> to, from, id, lang, subject, body;
-  std::optional<tern::thread> thread;
-  std::vector<chevron::any> payload;
-};
-struct headline {
-  std::optional<std::string> to, from, id, lang, subject, body;
-  std::optional<tern::thread> thread;
-  std::vector<chevron::any> payload;
-};
-struct error {
-  std::optional<std::string> to, from, id, lang, subject, body;
-  std::optional<tern::thread> thread;
-  stanza_error reason;  // the <error/>
-  std::vector<chevron::any> payload;
-};
-}  // namespace message
-
-namespace presence {
-struct available {
-  std::optional<std::string> to, from, id, lang, show, status;
-  std::optional<int> priority;
-  std::vector<chevron::any> payload;
-};
-struct unavailable {
-  std::optional<std::string> to, from, id, lang, status;
-  std::vector<chevron::any> payload;
-};
-struct subscribe {
-  std::optional<std::string> to, from, id, lang;
-  std::vector<chevron::any> payload;
-};
-struct subscribed {
-  std::optional<std::string> to, from, id, lang;
-  std::vector<chevron::any> payload;
-};
-struct unsubscribe {
-  std::optional<std::string> to, from, id, lang;
-  std::vector<chevron::any> payload;
-};
-struct unsubscribed {
-  std::optional<std::string> to, from, id, lang;
-  std::vector<chevron::any> payload;
-};
-struct probe {
-  std::optional<std::string> to, from, id, lang;
-  std::vector<chevron::any> payload;
-};
-struct error {
-  std::optional<std::string> to, from, id, lang;
-  stanza_error reason;
-  std::vector<chevron::any> payload;
-};
-}  // namespace presence
-
-namespace iq {
-struct get {
-  std::optional<std::string> to, from;
-  std::string id;
-  std::optional<std::string> lang;
-  std::vector<chevron::any> payload;
-};
-struct set {
-  std::optional<std::string> to, from;
-  std::string id;
-  std::optional<std::string> lang;
-  std::vector<chevron::any> payload;
-};
-struct result {
-  std::optional<std::string> to, from;
-  std::string id;
-  std::optional<std::string> lang;
-  std::vector<chevron::any> payload;
-};
-struct error {
-  std::optional<std::string> to, from;
-  std::string id;
-  std::optional<std::string> lang;
-  stanza_error reason;
-  std::vector<chevron::any> payload;
-};
-}  // namespace iq
-
-// The schema every stanza shares: its element, the four attributes, the
-// <error/> where the kind has one, and the rest kept.
-template <class T>
-constexpr auto stanza_schema(std::string_view element) {
-  using namespace chevron::members;
-  auto made = chevron::schema<T>()
-                  .name(client_namespace, element)
-                  .template member<"to">(attribute())
-                  .template member<"from">(attribute())
-                  .template member<"id">(attribute())
-                  .template member<"lang">(attribute("lang", xml_namespace))
-                  .template member<"payload">(unknown_children());
-  if constexpr (requires(T one) { one.reason; })
-    return made.template member<"reason">(child("error"));
-  else
-    return made;
-}
-
-namespace message {
-constexpr auto xml_schema(chevron::type<normal>) {
-  return stanza_schema<normal>("message").when<"type">("normal", chevron::or_absent);
-}
-constexpr auto xml_schema(chevron::type<chat>) { return stanza_schema<chat>("message").when<"type">("chat"); }
-constexpr auto xml_schema(chevron::type<groupchat>) {
-  return stanza_schema<groupchat>("message").when<"type">("groupchat");
-}
-constexpr auto xml_schema(chevron::type<headline>) {
-  return stanza_schema<headline>("message").when<"type">("headline");
-}
-constexpr auto xml_schema(chevron::type<error>) { return stanza_schema<error>("message").when<"type">("error"); }
-}  // namespace message
-
-namespace presence {
-constexpr auto xml_schema(chevron::type<available>) {
-  return stanza_schema<available>("presence").when<"type">("", chevron::or_absent);
-}
-constexpr auto xml_schema(chevron::type<unavailable>) {
-  return stanza_schema<unavailable>("presence").when<"type">("unavailable");
-}
-constexpr auto xml_schema(chevron::type<subscribe>) {
-  return stanza_schema<subscribe>("presence").when<"type">("subscribe");
-}
-constexpr auto xml_schema(chevron::type<subscribed>) {
-  return stanza_schema<subscribed>("presence").when<"type">("subscribed");
-}
-constexpr auto xml_schema(chevron::type<unsubscribe>) {
-  return stanza_schema<unsubscribe>("presence").when<"type">("unsubscribe");
-}
-constexpr auto xml_schema(chevron::type<unsubscribed>) {
-  return stanza_schema<unsubscribed>("presence").when<"type">("unsubscribed");
-}
-constexpr auto xml_schema(chevron::type<probe>) { return stanza_schema<probe>("presence").when<"type">("probe"); }
-constexpr auto xml_schema(chevron::type<error>) { return stanza_schema<error>("presence").when<"type">("error"); }
-}  // namespace presence
-
-namespace iq {
-constexpr auto xml_schema(chevron::type<get>) { return stanza_schema<get>("iq").when<"type">("get"); }
-constexpr auto xml_schema(chevron::type<set>) { return stanza_schema<set>("iq").when<"type">("set"); }
-constexpr auto xml_schema(chevron::type<result>) { return stanza_schema<result>("iq").when<"type">("result"); }
-constexpr auto xml_schema(chevron::type<error>) { return stanza_schema<error>("iq").when<"type">("error"); }
-}  // namespace iq
 
 // A stream error (RFC 6120, 4.9): the server ends the stream, and says why.
 struct stream_error {
@@ -255,9 +90,19 @@ constexpr auto xml_schema(chevron::type<stream_error>) {
   return chevron::schema<stream_error>().name(stream_namespace, "error").members(unknown_children());
 }
 
-// The roster (RFC 6121, 2): the contacts, as the server keeps them.
-inline constexpr std::string_view roster_namespace = "jabber:iq:roster";
+// A conversation a message belongs to (RFC 6121, 5.2.5): its identifier,
+// and the thread it was spun off from.
+struct thread {
+  std::string id;
+  std::optional<std::string> parent;
+};
 
+constexpr auto xml_schema(chevron::type<thread>) {
+  using namespace chevron::members;
+  return chevron::schema<thread>().name(client_namespace, "thread").members(text(), attribute());
+}
+
+// The roster (RFC 6121, 2): the contacts, as the server keeps them.
 namespace subscription {
 struct none { static constexpr std::string_view xml_value = "none"; };
 struct to { static constexpr std::string_view xml_value = "to"; };
@@ -284,6 +129,7 @@ constexpr auto xml_schema(chevron::type<roster_item>) {
       .members(attribute(), attribute(), attribute(), attribute(), child_text());
 }
 
+// The roster as a result, or as a push (2.1.6).
 struct roster {
   std::optional<std::string> ver;
   std::vector<roster_item> items;
@@ -294,11 +140,30 @@ constexpr auto xml_schema(chevron::type<roster>) {
   return chevron::schema<roster>().name(roster_namespace, "query").members(attribute(), child("item"));
 }
 
+// An entity's software (XEP-0092), as it answers; each part may be missing,
+// so that an answer short of one is still read.
+struct version {
+  std::optional<std::string> name;
+  std::optional<std::string> version;
+  std::optional<std::string> os;
+};
+
+constexpr auto xml_schema(chevron::type<version>) {
+  return chevron::schema<version>().name("jabber:iq:version", "query");
+}
+
+// What kind of request a query goes in: using kind = tern::get; or tern::set.
+struct get {};
+struct set {};
+
+// The queries: each says its kind and what its answer is read into -- a type
+// of the protocol's answers<>, or void for an empty result.
 namespace query {
+
 // The roster asked for (RFC 6121, 2.1.3), from the version given where there
 // is one (2.6).
 struct roster {
-  using kind = iq::get;
+  using kind = tern::get;
   using answer = tern::roster;
   std::optional<std::string> ver;
 };
@@ -307,7 +172,336 @@ constexpr auto xml_schema(chevron::type<roster>) {
   using namespace chevron::members;
   return chevron::schema<roster>().name(roster_namespace, "query").members(attribute());
 }
+
+// XEP-0092: an entity's software.
+struct version {
+  using kind = tern::get;
+  using answer = tern::version;
+};
+
+constexpr auto xml_schema(chevron::type<version>) {
+  return chevron::schema<version>().name("jabber:iq:version", "query");
+}
+
+// XEP-0199: a ping, answered by an empty result.
+struct ping {
+  using kind = tern::get;
+  using answer = void;
+};
+
+constexpr auto xml_schema(chevron::type<ping>) { return chevron::schema<ping>().name("urn:xmpp:ping", "ping"); }
+
 }  // namespace query
+
+// The stanzas, a type for each kind, over what they carry: X, a
+// chevron::tagged of the types a protocol names. Each is read straight into
+// its type; what is not named is kept, as a chevron::any.
+namespace basic {
+
+template <class X>
+struct message_normal {
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
+  std::vector<X> payload;
+};
+template <class X>
+struct message_chat {
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
+  std::vector<X> payload;
+};
+template <class X>
+struct message_groupchat {
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
+  std::vector<X> payload;
+};
+template <class X>
+struct message_headline {
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
+  std::vector<X> payload;
+};
+template <class X>
+struct message_error {
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
+  stanza_error reason;  // the <error/>
+  std::vector<X> payload;
+};
+
+template <class X>
+struct presence_available {
+  std::optional<std::string> to, from, id, lang, show, status;
+  std::optional<int> priority;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_unavailable {
+  std::optional<std::string> to, from, id, lang, status;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_subscribe {
+  std::optional<std::string> to, from, id, lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_subscribed {
+  std::optional<std::string> to, from, id, lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_unsubscribe {
+  std::optional<std::string> to, from, id, lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_unsubscribed {
+  std::optional<std::string> to, from, id, lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_probe {
+  std::optional<std::string> to, from, id, lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct presence_error {
+  std::optional<std::string> to, from, id, lang;
+  stanza_error reason;
+  std::vector<X> payload;
+};
+
+template <class X>
+struct iq_get {
+  std::optional<std::string> to, from;
+  std::string id;
+  std::optional<std::string> lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct iq_set {
+  std::optional<std::string> to, from;
+  std::string id;
+  std::optional<std::string> lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct iq_result {
+  std::optional<std::string> to, from;
+  std::string id;
+  std::optional<std::string> lang;
+  std::vector<X> payload;
+};
+template <class X>
+struct iq_error {
+  std::optional<std::string> to, from;
+  std::string id;
+  std::optional<std::string> lang;
+  stanza_error reason;
+  std::vector<X> payload;
+};
+
+}  // namespace basic
+
+// The schema every stanza shares: its element, the four attributes, the
+// <error/> where the kind has one; what it carries is its payload, a tagged.
+template <class T>
+constexpr auto stanza_schema(std::string_view element) {
+  using namespace chevron::members;
+  auto made = chevron::schema<T>()
+                  .name(client_namespace, element)
+                  .template member<"to">(attribute())
+                  .template member<"from">(attribute())
+                  .template member<"id">(attribute())
+                  .template member<"lang">(attribute("lang", xml_namespace));
+  if constexpr (requires(T one) { one.reason; })
+    return made.template member<"reason">(child("error"));
+  else
+    return made;
+}
+
+namespace basic {
+
+template <class X>
+constexpr auto xml_schema(chevron::type<message_normal<X>>) {
+  return stanza_schema<message_normal<X>>("message").template when<"type">("normal", chevron::or_absent);
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<message_chat<X>>) {
+  return stanza_schema<message_chat<X>>("message").template when<"type">("chat");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<message_groupchat<X>>) {
+  return stanza_schema<message_groupchat<X>>("message").template when<"type">("groupchat");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<message_headline<X>>) {
+  return stanza_schema<message_headline<X>>("message").template when<"type">("headline");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<message_error<X>>) {
+  return stanza_schema<message_error<X>>("message").template when<"type">("error");
+}
+
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_available<X>>) {
+  return stanza_schema<presence_available<X>>("presence").template when<"type">("", chevron::or_absent);
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_unavailable<X>>) {
+  return stanza_schema<presence_unavailable<X>>("presence").template when<"type">("unavailable");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_subscribe<X>>) {
+  return stanza_schema<presence_subscribe<X>>("presence").template when<"type">("subscribe");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_subscribed<X>>) {
+  return stanza_schema<presence_subscribed<X>>("presence").template when<"type">("subscribed");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_unsubscribe<X>>) {
+  return stanza_schema<presence_unsubscribe<X>>("presence").template when<"type">("unsubscribe");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_unsubscribed<X>>) {
+  return stanza_schema<presence_unsubscribed<X>>("presence").template when<"type">("unsubscribed");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_probe<X>>) {
+  return stanza_schema<presence_probe<X>>("presence").template when<"type">("probe");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<presence_error<X>>) {
+  return stanza_schema<presence_error<X>>("presence").template when<"type">("error");
+}
+
+template <class X>
+constexpr auto xml_schema(chevron::type<iq_get<X>>) {
+  return stanza_schema<iq_get<X>>("iq").template when<"type">("get");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<iq_set<X>>) {
+  return stanza_schema<iq_set<X>>("iq").template when<"type">("set");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<iq_result<X>>) {
+  return stanza_schema<iq_result<X>>("iq").template when<"type">("result");
+}
+template <class X>
+constexpr auto xml_schema(chevron::type<iq_error<X>>) {
+  return stanza_schema<iq_error<X>>("iq").template when<"type">("error");
+}
+
+}  // namespace basic
+
+// A protocol: the types a session reads what it receives into. queries<> for
+// what gets and sets carry, answers<> for what results carry, extensions<>
+// for what messages and presence carry.
+template <class... T>
+struct queries {};
+template <class... T>
+struct answers {};
+template <class... T>
+struct extensions {};
+
+template <class Queries = queries<>, class Answers = answers<>, class Extensions = extensions<>>
+struct protocol;
+
+template <class... Q, class... A, class... E>
+struct protocol<queries<Q...>, answers<A...>, extensions<E...>> {
+  using query_payload = chevron::tagged<Q..., chevron::any>;
+  using answer_payload = chevron::tagged<A..., chevron::any>;
+  using extension = chevron::tagged<E..., chevron::any>;
+  using error_payload = chevron::tagged<chevron::any>;
+
+  struct message {
+    using normal = basic::message_normal<extension>;
+    using chat = basic::message_chat<extension>;
+    using groupchat = basic::message_groupchat<extension>;
+    using headline = basic::message_headline<extension>;
+    using error = basic::message_error<extension>;
+  };
+  struct presence {
+    using available = basic::presence_available<extension>;
+    using unavailable = basic::presence_unavailable<extension>;
+    using subscribe = basic::presence_subscribe<extension>;
+    using subscribed = basic::presence_subscribed<extension>;
+    using unsubscribe = basic::presence_unsubscribe<extension>;
+    using unsubscribed = basic::presence_unsubscribed<extension>;
+    using probe = basic::presence_probe<extension>;
+    using error = basic::presence_error<extension>;
+  };
+  struct iq {
+    using get = basic::iq_get<query_payload>;
+    using set = basic::iq_set<query_payload>;
+    using result = basic::iq_result<answer_payload>;
+    using error = basic::iq_error<error_payload>;
+  };
+
+  using message_t = std::variant<typename message::normal, typename message::chat, typename message::groupchat,
+                                 typename message::headline, typename message::error>;
+  using presence_t =
+      std::variant<typename presence::available, typename presence::unavailable, typename presence::subscribe,
+                   typename presence::subscribed, typename presence::unsubscribe, typename presence::unsubscribed,
+                   typename presence::probe, typename presence::error>;
+  using iq_t = std::variant<typename iq::get, typename iq::set, typename iq::result, typename iq::error>;
+  using stanza_t = std::variant<message_t, presence_t, iq_t>;
+
+  template <class T>
+  static constexpr bool answers_with = (std::same_as<T, A> || ...);
+
+  // One stanza, or the stream's error, read as the type its name says.
+  template <class Source>
+  static auto read_one(Source& source) {
+    return chevron::read_one_of<typename message::normal, typename message::chat, typename message::groupchat,
+                                typename message::headline, typename message::error, typename presence::available,
+                                typename presence::unavailable, typename presence::subscribe,
+                                typename presence::subscribed, typename presence::unsubscribe,
+                                typename presence::unsubscribed, typename presence::probe,
+                                typename presence::error, typename iq::get, typename iq::set, typename iq::result,
+                                typename iq::error, stream_error>(source);
+  }
+};
+
+// What RFC 6120 and 6121 need, and the version and ping every client is
+// asked: roster pushes, version and ping as queries; the roster and versions
+// as answers.
+using standard = protocol<queries<roster, query::version, query::ping>, answers<roster, version>, extensions<>>;
+
+// The standard protocol's stanzas, by their plain names.
+namespace message {
+using normal = standard::message::normal;
+using chat = standard::message::chat;
+using groupchat = standard::message::groupchat;
+using headline = standard::message::headline;
+using error = standard::message::error;
+}  // namespace message
+
+namespace presence {
+using available = standard::presence::available;
+using unavailable = standard::presence::unavailable;
+using subscribe = standard::presence::subscribe;
+using subscribed = standard::presence::subscribed;
+using unsubscribe = standard::presence::unsubscribe;
+using unsubscribed = standard::presence::unsubscribed;
+using probe = standard::presence::probe;
+using error = standard::presence::error;
+}  // namespace presence
+
+namespace iq {
+using get = standard::iq::get;
+using set = standard::iq::set;
+using result = standard::iq::result;
+using error = standard::iq::error;
+}  // namespace iq
+
+using message_t = standard::message_t;
+using presence_t = standard::presence_t;
+using iq_t = standard::iq_t;
+using stanza_t = standard::stanza_t;
 
 // A roster kept between sessions (RFC 6121, 2.6): what the caller stores --
 // the version it is at, and the items by JID -- and gives back to sync().
@@ -341,24 +535,18 @@ struct roster_cache {
   }
 
   // The same, from the stanza: false where it is not a roster push.
-  bool apply(const iq::set& push) {
-    if (push.payload.empty() || push.payload.front().uri != roster_namespace ||
-        push.payload.front().local != "query")
-      return false;
-    auto read = chevron::from_any<roster>(push.payload.front());
-    if (!read)
-      return false;
-    apply(std::move(*read));
-    return true;
+  template <class X>
+  bool apply(const basic::iq_set<X>& push) {
+    if constexpr (X::template can_hold<roster>) {
+      if (!push.payload.empty())
+        if (const roster* got = push.payload.front().template get_if<roster>()) {
+          apply(*got);
+          return true;
+        }
+    }
+    return false;
   }
 };
-
-using message_t = std::variant<message::normal, message::chat, message::groupchat, message::headline, message::error>;
-using presence_t = std::variant<presence::available, presence::unavailable, presence::subscribe,
-                                presence::subscribed, presence::unsubscribe, presence::unsubscribed, presence::probe,
-                                presence::error>;
-using iq_t = std::variant<iq::get, iq::set, iq::result, iq::error>;
-using stanza_t = std::variant<message_t, presence_t, iq_t>;
 
 }  // namespace tern
 
@@ -380,10 +568,12 @@ struct mechanisms_feature {
 struct bind_feature {
   std::vector<chevron::any> anything;
 };
+struct rosterver_feature {};
 struct features {
   std::optional<starttls_feature> starttls;
   std::optional<mechanisms_feature> mechanisms;
   std::optional<bind_feature> bind;
+  std::optional<rosterver_feature> ver;
   std::vector<chevron::any> other;
 };
 
@@ -398,9 +588,20 @@ constexpr auto xml_schema(chevron::type<bind_feature>) {
   using namespace chevron::members;
   return chevron::schema<bind_feature>().name(bind_namespace, "bind").members(unknown_children());
 }
+constexpr auto xml_schema(chevron::type<rosterver_feature>) {
+  return chevron::schema<rosterver_feature>().name("urn:xmpp:features:rosterver", "ver");
+}
 constexpr auto xml_schema(chevron::type<features>) {
   using namespace chevron::members;
-  return chevron::schema<features>().name(stream_namespace, "features").members(_, _, _, unknown_children());
+  return chevron::schema<features>().name(stream_namespace, "features").members(_, _, _, _, unknown_children());
+}
+
+// The answer to binding: the full JID.
+struct bind_result {
+  std::optional<std::string> jid;
+};
+constexpr auto xml_schema(chevron::type<bind_result>) {
+  return chevron::schema<bind_result>().name(bind_namespace, "bind");
 }
 
 // <proceed/>, <failure/>, <challenge>, <success> and the rest: an element's
@@ -410,6 +611,11 @@ struct nonza {
   std::string first_child;  // the name of its first child element: a failure's condition
 };
 
+template <class T> struct is_iq_get : std::false_type {};
+template <class X> struct is_iq_get<basic::iq_get<X>> : std::true_type {};
+template <class T> struct is_iq_set : std::false_type {};
+template <class X> struct is_iq_set<basic::iq_set<X>> : std::true_type {};
+
 }  // namespace tern::detail
 
 export namespace tern {
@@ -418,12 +624,13 @@ enum class connect_code : std::uint8_t {
   xml,               // the stream was not well-formed, or not what was asked
   closed,            // the input ended
   stream_error,      // the server ended the stream with an error
-  tls_required,      // the server wants TLS and no way to start it was given
+  tls_required,      // the server wants TLS and the transport cannot start it
   tls_refused,       // the server refused STARTTLS
   no_mechanism,      // nothing both sides can authenticate with
   not_authorized,    // the server refused the credentials
   authentication,    // SCRAM went wrong: see sasl
   bind_refused,      // the server refused the resource
+  tls_failed,        // the transport could not start TLS
 };
 
 struct connect_error {
@@ -446,52 +653,120 @@ struct channel_binding {
   crypto::bytes data;
 };
 
+// A transport: bytes in, as an input range -- of bytes, or of chunks, each a
+// range of bytes as one read brought them -- and bytes out, written and then
+// flushed where a unit ends. input() is a reference to a range the transport
+// keeps; after start_tls() it is taken again.
+template <class T>
+concept transport = requires(T& t, std::string_view bytes) {
+  requires std::is_lvalue_reference_v<decltype(t.input())>;
+  requires std::ranges::input_range<std::remove_reference_t<decltype(t.input())>>;
+  t.write(bytes);
+  t.flush();
+};
+
+// One that can start TLS at <proceed/> (RFC 6120, 5.4.3.3): true where the
+// handshake succeeded, the server's name given for checking its certificate.
+template <class T>
+concept tls_transport = transport<T> && requires(T& t, std::string_view host) {
+  { t.start_tls(host) } -> std::convertible_to<bool>;
+};
+
+// One that can say it is secured -- by TLS started, or from the start, as
+// with direct TLS (XEP-0368) -- and so allow PLAIN and channel binding.
+template <class T>
+concept secured_transport = transport<T> && requires(const T& t) {
+  { t.secured() } -> std::convertible_to<bool>;
+};
+
+// One whose TLS gives channel-binding data (RFC 9266, tls-exporter; or
+// tls-server-end-point): with it SCRAM-SHA-256-PLUS or SCRAM-SHA-1-PLUS is
+// used where offered, and the absence of an offer is said to the server.
+template <class T>
+concept binding_transport = transport<T> && requires(T& t) {
+  { t.channel_binding() } -> std::same_as<std::optional<channel_binding>>;
+};
+
+// A range read and an output iterator written: a transport without TLS.
+template <std::ranges::input_range Input, std::output_iterator<char> Out>
+class range_transport {
+ public:
+  range_transport(Input& input, Out output) : input_(&input), output_(std::move(output)) {}
+  Input& input() { return *input_; }
+  void write(std::string_view bytes) { output_ = std::ranges::copy(bytes, std::move(output_)).out; }
+  void flush() {}
+
+ private:
+  Input* input_;
+  Out output_;
+};
+
 struct options {
   std::string username;  // the localpart, prepared
   std::string domain;
   std::string password;
   std::optional<std::string> resource;
-  // Called at <proceed/>: put TLS under the input and the output, and return.
-  // Without it, STARTTLS is not asked for, and a server that requires it is an
-  // error.
-  std::function<void()> start_tls;
   // PLAIN sends the password itself: only over TLS, unless this says so.
   bool plain_without_tls = false;
   std::uint32_t minimum_iterations = 4096;
   std::string nonce = {};  // for SCRAM; random where empty
-  // Called by a request that has to wait while another one reads the stream:
-  // suspend here and let the others run -- a coroutine's yield, or a wait on
-  // a condition with threads. Without it, only one request may be in flight.
-  std::function<void()> yield;
-  // The TLS channel's binding data, where the TLS layer can give it (RFC 9266,
-  // tls-exporter; or tls-server-end-point): with it SCRAM-SHA-256-PLUS or
-  // SCRAM-SHA-1-PLUS is used where offered, and the absence of an offer is
-  // said to the server.
-  std::function<std::optional<channel_binding>()> channel_binding;
   // A get or a set nobody handles is answered with service-unavailable, as
   // RFC 6120, 8.2.3 requires a reply; with this, it is handed out by
   // receive() and stanzas() instead, and answering it is the caller's.
   bool deliver_unhandled = false;
 };
 
-// Thrown by a request handler: the request is answered with this error.
+// The handlers of incoming queries, given at connect(): each a callable
+// taking a query type of the protocol's queries<>, and returning its answer
+// -- a type with a chevron schema, or void for an empty result. The first
+// that takes the query is called; one that throws tern::refusal sends the
+// error instead.
+//   tern::answering{[](const tern::query::version&) { return tern::version{"tern", "0.1"}; },
+//                   [](const tern::query::ping&) {}}
+template <class... Handlers>
+class answering {
+ public:
+  constexpr answering(Handlers... handlers) : handlers(std::move(handlers)...) {}
+  std::tuple<Handlers...> handlers;
+};
+template <class... Handlers>
+answering(Handlers...) -> answering<Handlers...>;
+
+// Thrown by a handler: the request is answered with this error.
 struct refusal {
   std::string condition = "service-unavailable";
+};
+
+// How a request waits while another one reads the stream: suspend and let
+// the others run -- a coroutine's yield, or a wait on a condition with
+// threads. no_yield: only one request in flight at a time.
+struct no_yield {
+  void operator()() const noexcept {}
 };
 
 }  // namespace tern
 
 namespace tern::detail {
 
-// An input range read for chevron: bytes fed to a parser only as far as the
-// next event needs -- up to a '>' or a '<', where an event can end -- and
+// A transport's input read for chevron: bytes fed to a parser only as far as
+// the next event needs -- up to a '>' or a '<', where an event can end -- and
 // never further. Or a range of chunks, each fed whole.
-template <class I, class S>
+template <class R>
 class source {
-  static constexpr bool chunks = std::ranges::input_range<std::iter_reference_t<I>>;
+  using iterator = std::ranges::iterator_t<R>;
+  using sentinel = std::ranges::sentinel_t<R>;
+  static constexpr bool chunks = std::ranges::input_range<std::iter_reference_t<iterator>>;
 
  public:
-  source(I at, S end) : at_(std::move(at)), end_(std::move(end)) {}
+  // The input, from where it is now: at the start, and again after TLS.
+  void start(R& range) {
+    at_.reset();
+    end_.reset();
+    at_.emplace(std::ranges::begin(range));
+    end_.emplace(std::ranges::end(range));
+    parser_ = chevron::parser();
+    finished_ = false;
+  }
 
   std::expected<std::optional<chevron::event>, chevron::error> next() {
     for (;;) {
@@ -500,45 +775,43 @@ class source {
         return one;
       if (finished_)
         return one;
-      // A range of chunks -- what each read of a socket brought -- is fed a
-      // chunk at a time.
       if constexpr (chunks) {
-        if (at_ == end_) {
+        // A chunk -- what a read of a socket brought -- fed whole.
+        if (*at_ == *end_) {
           parser_.finish();
           finished_ = true;
         } else {
-          parser_.feed(*at_);
-          ++at_;
+          parser_.feed(**at_);
+          ++*at_;
         }
-        continue;
       } else {
-      // The end is asked about only where a byte is needed: over a socket,
-      // asking is waiting for the peer, and after the '>' that ends a
-      // stanza there may be nothing more for a long while.
-      std::string piece;
-      bool ended = false;
-      for (;;) {
-        if (at_ == end_) {
-          ended = true;
-          break;
+        // The end is asked about only where a byte is needed: over a socket,
+        // asking is waiting for the peer, and after the '>' that ends a
+        // stanza there may be nothing more for a long while.
+        std::string piece;
+        bool ended = false;
+        for (;;) {
+          if (*at_ == *end_) {
+            ended = true;
+            break;
+          }
+          const char unit = static_cast<char>(**at_);
+          ++*at_;
+          piece.push_back(unit);
+          if (unit == '>' || unit == '<')
+            break;
         }
-        const char unit = static_cast<char>(*at_);
-        ++at_;
-        piece.push_back(unit);
-        if (unit == '>' || unit == '<')
-          break;
-      }
-      parser_.feed(piece);
-      if (ended && piece.empty()) {
-        parser_.finish();
-        finished_ = true;
-      }
+        parser_.feed(piece);
+        if (ended && piece.empty()) {
+          parser_.finish();
+          finished_ = true;
+        }
       }
     }
   }
 
-  // A new stream, after TLS or authentication: a new document, from here on.
-  // What came after the old document in the same chunk belongs to the new.
+  // A new stream after authentication: a new document, from here on. What
+  // came after the old document in the same chunk belongs to the new.
   void restart() {
     const std::string rest(parser_.unread());
     parser_ = chevron::parser();
@@ -547,8 +820,8 @@ class source {
   }
 
  private:
-  I at_;
-  S end_;
+  std::optional<iterator> at_;
+  std::optional<sentinel> end_;
   chevron::parser parser_;
   bool finished_ = false;
 };
@@ -570,14 +843,14 @@ inline std::string escaped(std::string_view text) {
 export namespace tern {
 
 // Why a request came to nothing: the stream failed; the server or the peer
-// answered with an error, kept whole in reply; or the answer was not the type
-// asked for.
+// answered with an error, its <error/> in reply; or the answer was not the
+// type asked for.
 enum class request_code { connection, error_reply, bad_answer };
 
 struct request_error {
   request_code code;
   std::optional<connect_error> connection;
-  std::optional<iq::error> reply;  // or the answer that was not the type asked for, as its payload
+  std::optional<stanza_error> reply;
 };
 
 // The same failures, thrown by the calls that do not hand them back.
@@ -597,12 +870,16 @@ struct request_failure : std::runtime_error {
   request_error error;
 };
 
-// A query: a payload that says what kind of request carries it and what the
-// answer is read into.
-//   struct version_query { using kind = tern::iq::get; using answer = server_version; };
+// A query: a payload that says what kind of request carries it -- tern::get
+// or tern::set -- and what its answer is read into, or void.
+template <class K>
+inline constexpr bool is_get_kind = std::same_as<K, get> || detail::is_iq_get<K>::value;
+template <class K>
+inline constexpr bool is_set_kind = std::same_as<K, set> || detail::is_iq_set<K>::value;
+
 template <class Q>
-concept is_query = chevron::described<Q> && chevron::described<typename Q::answer> &&
-                (std::same_as<typename Q::kind, iq::get> || std::same_as<typename Q::kind, iq::set>);
+concept is_query = chevron::described<Q> && (is_get_kind<typename Q::kind> || is_set_kind<typename Q::kind>) &&
+                   (std::is_void_v<typename Q::answer> || chevron::described<typename Q::answer>);
 
 // A typed request: whom to ask, and the query itself.
 template <class Query>
@@ -612,35 +889,52 @@ struct asking {
   Query query{};
 };
 
-// A stream that is authenticated and bound: stanzas in, stanzas out.
-template <class I, class S, class Out>
+// A get or a set, of any protocol.
+template <class Q>
+concept iq_request = detail::is_iq_get<Q>::value || detail::is_iq_set<Q>::value;
+
+// A stream that is authenticated and bound: stanzas in, stanzas out. T is the
+// transport, or a reference to the caller's; P the protocol; Handlers the
+// answering<> of incoming queries; Yield how a request waits.
+template <class T, class P = standard, class Handlers = answering<>, class Yield = no_yield>
 class session {
  public:
-  session(I at, S end, Out out) : source_(std::move(at), std::move(end)), out_(std::move(out)) {}
+  using protocol_type = P;
+  using transport_type = std::remove_reference_t<T>;
+  using message_t = typename P::message_t;
+  using presence_t = typename P::presence_t;
+  using iq_t = typename P::iq_t;
+  using stanza_t = typename P::stanza_t;
+  using result = typename P::iq::result;
+  using error = typename P::iq::error;
+
+  session(T transport, Handlers handlers, Yield yield)
+      : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), yield_(std::move(yield)) {
+    source_.start(transport_.input());
+  }
 
   // The full JID the server bound.
   const std::string& jid() const noexcept { return jid_; }
+
+  // Whether the server said it versions rosters (RFC 6121, 2.6.1).
+  bool roster_versioning() const noexcept { return roster_versioning_; }
 
   // The next stanza, as it arrives; nothing where the stream has ended
   // cleanly; or the error.
   std::expected<std::optional<stanza_t>, connect_error> try_receive() {
     // What arrived while a request waited for its answer, first.
-    if (!pending_.empty()) {
-      stanza_t one = std::move(pending_.front());
-      pending_.pop_front();
-      return std::optional<stanza_t>(std::move(one));
-    }
+    if (!pending_.empty())
+      return take_pending();
     for (;;) {
       if (reading_) {
-        if (!yield_)
+        if constexpr (can_yield) {
+          yield_();
+          if (!pending_.empty())
+            return take_pending();
+          continue;
+        } else {
           return std::unexpected(connect_error{connect_code::xml, "read while a request reads", std::nullopt});
-        yield_();
-        if (!pending_.empty()) {
-          stanza_t one = std::move(pending_.front());
-          pending_.pop_front();
-          return std::optional<stanza_t>(std::move(one));
         }
-        continue;
       }
       auto one = read_locked();
       if (!one || !*one)
@@ -651,57 +945,21 @@ class session {
     }
   }
 
-  // Requests carrying a Query, handled: the query read, the handler's answer
-  // sent back as the result -- an Answer with a chevron schema, or nothing
-  // for an empty result; a tern::refusal thrown sends the error instead.
-  template <chevron::described Query, class Handler>
-  void handle(Handler handler) {
-    constexpr auto schema = xml_schema(chevron::type<Query>{});
-    handlers_[{std::string(schema.uri), std::string(schema.local)}] =
-        [handler = std::move(handler)](const chevron::any& payload) -> std::vector<chevron::any> {
-          auto query = chevron::from_any<Query>(payload);
-          if (!query)
-            throw refusal{"bad-request"};
-          if constexpr (std::is_void_v<decltype(handler(*query))>) {
-            handler(*query);
-            return {};
-          } else {
-            return {chevron::to_any(handler(*query))};
-          }
-        };
-  }
-
-  // A request answered: the result, to whom it came from, with its id.
-  template <class Question>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  void answer(const Question& question, std::vector<chevron::any> payload = {}) {
-    send(iq::result{.to = question.from, .id = question.id, .payload = std::move(payload)});
-  }
-
-  template <class Question, chevron::described Payload>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  void answer(const Question& question, const Payload& payload) {
-    answer(question, std::vector<chevron::any>{chevron::to_any(payload)});
-  }
-
-  // A request refused: the error, of type cancel, with a condition of the
-  // stanza-errors namespace (RFC 6120, 8.3.3).
-  template <class Question>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  void refuse(const Question& question, std::string_view condition = "service-unavailable") {
-    chevron::any said{std::string(stanza_errors_namespace), std::string(condition), {}, {}};
-    send(iq::error{.to = question.from,
-                   .id = question.id,
-                   .reason = stanza_error{error_types::cancel{}, {std::move(said)}}});
+  // The next stanza, or nothing where the stream has ended cleanly; a failure
+  // is thrown, a tern::connect_failure.
+  std::optional<stanza_t> receive() {
+    auto one = try_receive();
+    if (!one)
+      throw connect_failure(std::move(one).error());
+    return std::move(*one);
   }
 
   // A get or a set sent, and its answer awaited: the result, or the error,
   // with the same id, from the address asked (RFC 6120, 8.2.3). Whatever else
   // arrives in the meantime is kept, and handed out by receive() and stanzas()
   // afterwards, in order. An id is made up where the request has none.
-  template <class Question>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  std::expected<iq::result, request_error> try_request(Question question) {
+  template <iq_request Question>
+  std::expected<result, request_error> try_request(Question question) {
     if (question.id.empty())
       question.id = "tern-" + std::to_string(++last_id_);
     const std::string id = question.id;
@@ -711,9 +969,9 @@ class session {
       if (auto found = waiting_.find(id); found->second.answer) {
         auto answer = std::move(*found->second.answer);
         waiting_.erase(found);
-        if (auto* refused = std::get_if<iq::error>(&answer))
-          return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(*refused)});
-        return std::get<iq::result>(std::move(answer));
+        if (auto* refused = std::get_if<error>(&answer))
+          return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(refused->reason)});
+        return std::get<result>(std::move(answer));
       }
       if (failed_) {
         waiting_.erase(id);
@@ -721,15 +979,16 @@ class session {
       }
       // Another request is reading: its reading may bring this answer too.
       if (reading_) {
-        if (!yield_) {
+        if constexpr (can_yield) {
+          yield_();
+          continue;
+        } else {
           waiting_.erase(id);
           return std::unexpected(request_error{
               request_code::connection,
               connect_error{connect_code::xml, "a second request in flight, and no yield", std::nullopt},
               std::nullopt});
         }
-        yield_();
-        continue;
       }
       auto one = read_locked();
       if (!one || !*one) {
@@ -742,32 +1001,35 @@ class session {
   }
 
   // The same, typed: a query that says what kind of request it is and what
-  // comes back -- using kind = tern::iq::get; using answer = the type -- asked
-  // of whom the request says:
-  //   session.request<version_query>({.to = "romeo@example.net/orchard"})
+  // comes back, asked of whom the request says:
+  //   session.request<tern::query::version>({.to = "romeo@example.net/orchard"})
+  // The answer is read straight into its type -- one of the protocol's
+  // answers<> -- as the result arrives; void for an empty result.
   template <is_query Query>
   std::expected<typename Query::answer, request_error> try_request(asking<Query> question = {}) {
-    typename Query::kind sent{.to = std::move(question.to), .lang = std::move(question.lang),
-                              .payload = {chevron::to_any(question.query)}};
+    using carried = chevron::tagged<Query>;
+    using sent_type =
+        std::conditional_t<is_get_kind<typename Query::kind>, basic::iq_get<carried>, basic::iq_set<carried>>;
+    sent_type sent{.to = std::move(question.to), .lang = std::move(question.lang)};
+    sent.payload.emplace_back(std::move(question.query));
     auto answer = try_request(std::move(sent));
     if (!answer)
       return std::unexpected(std::move(answer).error());
-    std::optional<typename Query::answer> typed;
-    if (!answer->payload.empty()) {
-      if (auto read = chevron::from_any<typename Query::answer>(answer->payload.front()))
-        typed = std::move(*read);
+    if constexpr (std::is_void_v<typename Query::answer>) {
+      return {};
+    } else {
+      static_assert(P::template answers_with<typename Query::answer>,
+                    "tern: the query's answer type is not among the protocol's answers<>");
+      if (!answer->payload.empty())
+        if (auto* typed = answer->payload.front().template get_if<typename Query::answer>())
+          return std::move(*typed);
+      return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt});
     }
-    if (!typed)
-      return std::unexpected(request_error{
-          request_code::bad_answer, std::nullopt,
-          iq::error{answer->to, answer->from, answer->id, answer->lang, {}, std::move(answer->payload)}});
-    return std::move(*typed);
   }
 
   // The same, throwing: the answer, or a tern::request_failure.
-  template <class Question>
-    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
-  iq::result request(Question question) {
+  template <iq_request Question>
+  result request(Question question) {
     auto answer = try_request(std::move(question));
     if (!answer)
       throw request_failure(std::move(answer).error());
@@ -779,24 +1041,135 @@ class session {
     auto answer = try_request<Query>(std::move(question));
     if (!answer)
       throw request_failure(std::move(answer).error());
-    return std::move(*answer);
+    if constexpr (!std::is_void_v<typename Query::answer>)
+      return std::move(*answer);
   }
 
-  // The next stanza, or nothing where the stream has ended cleanly; a failure
-  // is thrown, a tern::connect_failure.
-  std::optional<stanza_t> receive() {
-    auto one = try_receive();
-    if (!one)
-      throw connect_failure(std::move(one).error());
-    return std::move(*one);
+  // A request answered: an empty result, or one carrying the answer given.
+  template <iq_request Question>
+  void answer(const Question& question) {
+    send(basic::iq_result<chevron::tagged<chevron::any>>{.to = question.from, .id = question.id});
   }
 
-  // For connect(): how a waiting request lets others run, and whether
-  // requests nobody handles are handed out.
-  void yield_with(std::function<void()> yield) { yield_ = std::move(yield); }
+  template <iq_request Question, chevron::described Answer>
+  void answer(const Question& question, Answer carried) {
+    basic::iq_result<chevron::tagged<Answer>> out{.to = question.from, .id = question.id};
+    out.payload.emplace_back(std::move(carried));
+    send(out);
+  }
+
+  // A request refused: the error, of type cancel, with a condition of the
+  // stanza-errors namespace (RFC 6120, 8.3.3).
+  template <iq_request Question>
+  void refuse(const Question& question, std::string_view condition = "service-unavailable") {
+    chevron::any said{std::string(stanza_errors_namespace), std::string(condition), {}, {}};
+    send(basic::iq_error<chevron::tagged<chevron::any>>{
+        .to = question.from, .id = question.id, .reason = stanza_error{error_types::cancel{}, {std::move(said)}}});
+  }
+
+  class stanza_view;
+
+  // The stanzas as they arrive, for a range-based for loop: each a
+  // std::expected<stanza_t, connect_error>. The view ends where the server ends
+  // the stream, or just after an error.
+  stanza_view stanzas() { return stanza_view(*this); }
+
+  // A stanza, written to the transport, and flushed.
+  template <chevron::described Stanza>
+  void send(const Stanza& one) {
+    out_.clear();
+    chevron::write(std::back_inserter(out_), one);
+    transport_.write(out_);
+    transport_.flush();
+  }
+
+  // Ends the stream from this side (RFC 6120, 4.4). What the server sends
+  // before its own closing tag still arrives: go on reading stanzas() until
+  // it ends, and only then close the connection.
+  void close() {
+    // RFC 6121, 4.5: unavailable presence before the stream ends, where
+    // presence was sent.
+    if (announced_) {
+      send(typename P::presence::unavailable{});
+      announced_ = false;
+    }
+    transport_.write("</stream:stream>");
+    transport_.flush();
+  }
+
+  // Presence (RFC 6121, 4): available -- the initial presence after the
+  // roster, or a change of it -- and, to one address, directed.
+  void available(typename P::presence::available said = {}) {
+    if (!said.to)
+      announced_ = true;
+    send(said);
+  }
+
+  // Subscriptions (RFC 6121, 3), each to a bare JID as 3.1.1 wants: asking
+  // for someone's presence, approving or denying their asking, and taking
+  // one's own back. An address that is not one is an error, not sent.
+  std::expected<void, jid_error> subscribe(std::string_view to) {
+    return to_bare<typename P::presence::subscribe>(to);
+  }
+  std::expected<void, jid_error> approve(std::string_view to) {
+    return to_bare<typename P::presence::subscribed>(to);
+  }
+  std::expected<void, jid_error> deny(std::string_view to) {
+    return to_bare<typename P::presence::unsubscribed>(to);
+  }
+  std::expected<void, jid_error> unsubscribe(std::string_view to) {
+    return to_bare<typename P::presence::unsubscribe>(to);
+  }
+
+  // The roster brought up to date (RFC 6121, 2.6). Where the server versions
+  // rosters it is asked for from the version kept -- ver='' where there is
+  // none -- and an empty answer leaves the cache as it is: nothing changed,
+  // or the changes follow as pushes, for cache.apply(). Otherwise, and
+  // wherever the whole roster comes, it replaces what was kept.
+  std::expected<void, request_error> try_sync(roster_cache& cache) {
+    static_assert(P::template answers_with<roster>, "tern: sync() needs tern::roster among the protocol's answers<>");
+    query::roster asked;
+    if (roster_versioning_)
+      asked.ver = cache.ver.value_or("");
+    basic::iq_get<chevron::tagged<query::roster>> sent;
+    sent.payload.emplace_back(std::move(asked));
+    auto answer = try_request(std::move(sent));
+    if (!answer)
+      return std::unexpected(std::move(answer).error());
+    if (answer->payload.empty())
+      return {};
+    if (auto* whole = answer->payload.front().template get_if<roster>()) {
+      cache.replace(std::move(*whole));
+      return {};
+    }
+    return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt});
+  }
+
+  // The same, throwing a tern::request_failure.
+  void sync(roster_cache& cache) {
+    if (auto done = try_sync(cache); !done)
+      throw request_failure(std::move(done).error());
+  }
+
+  // For connect(): the transport, the reading it sets up, and what
+  // negotiation found.
+  transport_type& transport() noexcept { return transport_; }
+  detail::source<std::remove_reference_t<decltype(std::declval<transport_type&>().input())>>& source() {
+    return source_;
+  }
+  void bound_to(std::string jid) { jid_ = std::move(jid); }
+  void versions_rosters(bool on) { roster_versioning_ = on; }
   void deliver_unhandled(bool deliver) { deliver_unhandled_ = deliver; }
 
  private:
+  static constexpr bool can_yield = !std::same_as<Yield, no_yield>;
+
+  std::expected<std::optional<stanza_t>, connect_error> take_pending() {
+    stanza_t one = std::move(pending_.front());
+    pending_.pop_front();
+    return std::optional<stanza_t>(std::move(one));
+  }
+
   template <class Presence>
   std::expected<void, jid_error> to_bare(std::string_view to) {
     auto address = jid::parse(to);
@@ -818,8 +1191,37 @@ class session {
     return one;
   }
 
-  // An answer to a request in flight goes to it: the result or the error with
-  // its id, from the address it asked (RFC 6120, 8.2.3).
+  // A query given to the first handler that takes its type; false where none
+  // does.
+  template <class Question, class Query>
+  bool handled(const Question& question, const Query& query) {
+    bool done = false;
+    std::apply(
+        [&](auto&... handler) {
+          const auto try_one = [&](auto& one) {
+            using held = std::remove_reference_t<decltype(one)>;
+            if constexpr (std::invocable<held&, const Query&>) {
+              if (done)
+                return;
+              done = true;
+              try {
+                if constexpr (std::is_void_v<std::invoke_result_t<held&, const Query&>>) {
+                  one(query);
+                  answer(question);
+                } else {
+                  answer(question, one(query));
+                }
+              } catch (const refusal& refused) {
+                refuse(question, refused.condition);
+              }
+            }
+          };
+          (try_one(handler), ...);
+        },
+        handlers_.handlers);
+    return done;
+  }
+
   // A get or a set that arrived: to its handler, or refused -- every one gets
   // a reply -- unless requests nobody handles are handed out.
   bool dispatched(stanza_t& one) {
@@ -829,39 +1231,34 @@ class session {
     return std::visit(
         [&](auto& question) {
           using type = std::remove_cvref_t<decltype(question)>;
-          if constexpr (std::same_as<type, iq::get> || std::same_as<type, iq::set>) {
-            if constexpr (std::same_as<type, iq::set>) {
-              if (!question.payload.empty() && question.payload.front().uri == roster_namespace &&
-                  question.payload.front().local == "query") {
-                // RFC 6121, 2.1.6: a push is from the account itself -- no
-                // from, or the bare JID -- or it is ignored, not answered.
-                const std::string bare = jid_.substr(0, jid_.find('/'));
-                if (question.from && *question.from != bare)
-                  return true;
-                const auto found = handlers_.find({std::string(roster_namespace), "query"});
-                if (found != handlers_.end()) {
-                  try {
-                    answer(question, found->second(question.payload.front()));
-                  } catch (const refusal& refused) {
-                    refuse(question, refused.condition);
-                  }
-                  return true;
+          if constexpr (std::same_as<type, typename P::iq::get> || std::same_as<type, typename P::iq::set>) {
+            if constexpr (std::same_as<type, typename P::iq::set> &&
+                          P::query_payload::template can_hold<roster>) {
+              if (!question.payload.empty())
+                if (const roster* push = question.payload.front().template get_if<roster>()) {
+                  // RFC 6121, 2.1.6: a push is from the account itself -- no
+                  // from, or the bare JID -- or it is ignored, not answered.
+                  const std::string bare = jid_.substr(0, jid_.find('/'));
+                  if (question.from && *question.from != bare)
+                    return true;
+                  if (handled(question, *push))
+                    return true;
+                  // Nobody handles it: answered all the same, and handed out.
+                  answer(question);
+                  return false;
                 }
-                // Nobody handles it: answered all the same, and handed out.
-                answer(question);
-                return false;
-              }
             }
             if (!question.payload.empty()) {
-              const auto found = handlers_.find({question.payload.front().uri, question.payload.front().local});
-              if (found != handlers_.end()) {
-                try {
-                  answer(question, found->second(question.payload.front()));
-                } catch (const refusal& refused) {
-                  refuse(question, refused.condition);
-                }
+              const bool taken = std::visit(
+                  [&]<class Query>(const Query& query) {
+                    if constexpr (std::same_as<Query, chevron::any>)
+                      return false;
+                    else
+                      return handled(question, query);
+                  },
+                  question.payload.front().data());
+              if (taken)
                 return true;
-              }
             }
             if (deliver_unhandled_)
               return false;
@@ -874,6 +1271,8 @@ class session {
         *kind);
   }
 
+  // An answer to a request in flight goes to it: the result or the error with
+  // its id, from the address it asked (RFC 6120, 8.2.3).
   bool claimed(stanza_t& one) {
     auto* kind = std::get_if<iq_t>(&one);
     if (!kind)
@@ -881,7 +1280,7 @@ class session {
     return std::visit(
         [&](auto& answer) {
           using type = std::remove_cvref_t<decltype(answer)>;
-          if constexpr (std::same_as<type, iq::result> || std::same_as<type, iq::error>) {
+          if constexpr (std::same_as<type, result> || std::same_as<type, error>) {
             const auto found = waiting_.find(answer.id);
             if (found == waiting_.end() || found->second.answer)
               return false;
@@ -897,18 +1296,12 @@ class session {
   }
 
   std::expected<std::optional<stanza_t>, connect_error> read_stanza() {
-    auto one = chevron::read_one_of<message::normal, message::chat, message::groupchat, message::headline,
-                                    message::error, presence::available, presence::unavailable, presence::subscribe,
-                                    presence::subscribed, presence::unsubscribe, presence::unsubscribed,
-                                    presence::probe, presence::error, iq::get, iq::set, iq::result, iq::error,
-                                    stream_error>(source_);
+    auto one = P::read_one(source_);
     // A stream error ends the stream: its condition is the failure.
     if (one) {
       if (const auto* ended = std::get_if<stream_error>(&*one))
-        return std::unexpected(
-            connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt, ended->other_host()});
-    }
-    if (one)
+        return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()),
+                                             std::nullopt, ended->other_host()});
       return std::visit(
           [](auto&& value) {
             using type = std::remove_cvref_t<decltype(value)>;
@@ -922,102 +1315,22 @@ class session {
               return std::optional<stanza_t>(stanza_t(iq_t(std::move(value))));
           },
           std::move(*one));
-    const chevron::read_error& error = one.error();
-    // The server's </stream:stream>: the end, and a clean one.
-    if (error.code == chevron::read_code::unexpected_element && error.where.empty())
-      return std::nullopt;
-    if (error.code == chevron::read_code::incomplete ||
-        (error.parse_error && error.parse_error->code == chevron::error_code::unexpected_end))
-      return std::unexpected(connect_error{connect_code::closed, "", std::nullopt});
-    return std::unexpected(connect_error{connect_code::xml, error.where, std::nullopt});
-  }
-
- public:
-  class stanza_view;
-
-  // The stanzas as they arrive, for a range-based for loop: each a
-  // std::expected<stanza_t, connect_error>. The view ends where the server ends
-  // the stream, or just after an error.
-  stanza_view stanzas() { return stanza_view(*this); }
-
-  // A stanza, written to the output.
-  template <class Stanza>
-  void send(const Stanza& one) {
-    out_ = chevron::write(std::move(out_), one);
-  }
-
-  // Ends the stream.
-  // Ends the stream from this side (RFC 6120, 4.4). What the server sends
-  // before its own closing tag still arrives: go on reading stanzas() until
-  // it ends, and only then close the connection.
-  void close() {
-    // RFC 6121, 4.5: unavailable presence before the stream ends, where
-    // presence was sent.
-    if (announced_) {
-      send(presence::unavailable{});
-      announced_ = false;
     }
-    out_ = std::ranges::copy(std::string_view("</stream:stream>"), std::move(out_)).out;
+    const chevron::read_error& failure = one.error();
+    // The server's </stream:stream>: the end, and a clean one.
+    if (failure.code == chevron::read_code::unexpected_element && failure.where.empty())
+      return std::nullopt;
+    if (failure.code == chevron::read_code::incomplete ||
+        (failure.parse_error && failure.parse_error->code == chevron::error_code::unexpected_end))
+      return std::unexpected(connect_error{connect_code::closed, "", std::nullopt});
+    return std::unexpected(connect_error{connect_code::xml, failure.where, std::nullopt});
   }
 
-  // Presence (RFC 6121, 4): available -- the initial presence after the
-  // roster, or a change of it -- and, to one address, directed.
-  void available(presence::available said = {}) {
-    if (!said.to)
-      announced_ = true;
-    send(said);
-  }
-
-  // Subscriptions (RFC 6121, 3), each to a bare JID as 3.1.1 wants: asking
-  // for someone's presence, approving or denying their asking, and taking
-  // one's own back. An address that is not one is an error, not sent.
-  std::expected<void, jid_error> subscribe(std::string_view to) { return to_bare<presence::subscribe>(to); }
-  std::expected<void, jid_error> approve(std::string_view to) { return to_bare<presence::subscribed>(to); }
-  std::expected<void, jid_error> deny(std::string_view to) { return to_bare<presence::unsubscribed>(to); }
-  std::expected<void, jid_error> unsubscribe(std::string_view to) { return to_bare<presence::unsubscribe>(to); }
-
-  // The roster brought up to date (RFC 6121, 2.6). Where the server versions
-  // rosters it is asked for from the version kept -- ver='' where there is
-  // none -- and an empty answer leaves the cache as it is: nothing changed,
-  // or the changes follow as pushes, for cache.apply(). Otherwise, and
-  // wherever the whole roster comes, it replaces what was kept.
-  std::expected<void, request_error> try_sync(roster_cache& cache) {
-    query::roster asked;
-    if (roster_versioning_)
-      asked.ver = cache.ver.value_or("");
-    iq::get sent{.payload = {chevron::to_any(asked)}};
-    auto answer = try_request(std::move(sent));
-    if (!answer)
-      return std::unexpected(std::move(answer).error());
-    if (answer->payload.empty())
-      return {};
-    auto read = chevron::from_any<roster>(answer->payload.front());
-    if (!read)
-      return std::unexpected(request_error{
-          request_code::bad_answer, std::nullopt,
-          iq::error{answer->to, answer->from, answer->id, answer->lang, {}, std::move(answer->payload)}});
-    cache.replace(std::move(*read));
-    return {};
-  }
-
-  // The same, throwing a tern::request_failure.
-  void sync(roster_cache& cache) {
-    if (auto done = try_sync(cache); !done)
-      throw request_failure(std::move(done).error());
-  }
-
-  // Whether the server said it versions rosters (RFC 6121, 2.6.1).
-  bool roster_versioning() const { return roster_versioning_; }
-
-  // For connect(): the reading and writing it sets up, and the JID it bound.
-  detail::source<I, S>& source() { return source_; }
-  void bound_to(std::string jid) { jid_ = std::move(jid); }
-  void versions_rosters(bool on) { roster_versioning_ = on; }
-  Out& out() { return out_; }
-
- private:
-  detail::source<I, S> source_;
-  Out out_;
+  T transport_;
+  Handlers handlers_;
+  Yield yield_;
+  detail::source<std::remove_reference_t<decltype(std::declval<transport_type&>().input())>> source_;
+  std::string out_;
   std::string jid_;
   bool roster_versioning_ = false;
   std::deque<stanza_t> pending_;
@@ -1026,20 +1339,17 @@ class session {
   // answer once somebody has read it.
   struct slot {
     std::optional<std::string> to;
-    std::optional<std::variant<iq::result, iq::error>> answer;
+    std::optional<std::variant<result, error>> answer;
   };
   std::map<std::string, slot> waiting_;
   bool reading_ = false;
   std::optional<connect_error> failed_;
-  std::function<void()> yield_;
   bool deliver_unhandled_ = false;
   bool announced_ = false;
-  std::map<std::pair<std::string, std::string>, std::function<std::vector<chevron::any>(const chevron::any&)>>
-      handlers_;
 };
 
-template <class I, class S, class Out>
-class session<I, S, Out>::stanza_view : public std::ranges::view_interface<stanza_view> {
+template <class T, class P, class Handlers, class Yield>
+class session<T, P, Handlers, Yield>::stanza_view : public std::ranges::view_interface<stanza_view> {
  public:
   class iterator {
    public:
@@ -1096,11 +1406,15 @@ namespace tern::detail {
 
 template <class Session>
 class negotiation {
+  using transport_type = typename Session::transport_type;
+
  public:
   negotiation(Session& s, const options& o) : s_(s), o_(o) {}
 
   std::expected<void, connect_error> run() {
     bool secured = false;
+    if constexpr (secured_transport<transport_type>)
+      secured = s_.transport().secured();
     for (;;) {
       if (auto opened = open(); !opened)
         return opened;
@@ -1108,27 +1422,27 @@ class negotiation {
       if (!next)
         return fail(connect_code::xml, "stream features: " + next.error().where);
       if (const auto* ended = std::get_if<stream_error>(&*next))
-        return std::unexpected(
-            connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt, ended->other_host()});
+        return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()),
+                                             std::nullopt, ended->other_host()});
       const features* offered = &std::get<features>(*next);
       if (offered->starttls && !secured) {
-        if (!o_.start_tls) {
-          if (offered->starttls->required())
-            return fail(connect_code::tls_required, "");
-        } else {
+        if constexpr (tls_transport<transport_type>) {
           write("<starttls xmlns='" + std::string(tls_namespace) + "'/>");
           auto answer = read_nonza();
           if (!answer)
             return std::unexpected(answer.error());
-          if (answer->local != "proceed")
-          {
+          if (answer->local != "proceed") {
             write("</stream:stream>");
             return fail(connect_code::tls_refused, answer->local);
           }
-          o_.start_tls();
+          if (!s_.transport().start_tls(o_.domain))
+            return fail(connect_code::tls_failed, "");
           secured = true;
-          s_.source().restart();
+          s_.source().start(s_.transport().input());
           continue;
+        } else {
+          if (offered->starttls->required())
+            return fail(connect_code::tls_required, "");
         }
       }
       if (!authenticated_) {
@@ -1142,9 +1456,7 @@ class negotiation {
       }
       if (!offered->bind)
         return fail(connect_code::bind_refused, "no bind offered");
-      for (const chevron::any& one : offered->other)
-        if (one.uri == "urn:xmpp:features:rosterver" && one.local == "ver")
-          roster_versioning = true;
+      roster_versioning = offered->ver.has_value();
       return bind();
     }
   }
@@ -1157,7 +1469,10 @@ class negotiation {
     return std::unexpected(connect_error{code, std::move(detail), std::nullopt});
   }
 
-  void write(std::string_view text) { s_.out() = std::ranges::copy(text, std::move(s_.out())).out; }
+  void write(std::string_view text) {
+    s_.transport().write(text);
+    s_.transport().flush();
+  }
 
   // Our stream header, then the server's.
   std::expected<void, connect_error> open() {
@@ -1193,26 +1508,27 @@ class negotiation {
       auto next = s_.source().next();
       if (!next || !*next)
         return fail(connect_code::closed, "while negotiating");
-      if (const auto* start = std::get_if<chevron::start_element>(&**next)) {
+      if (const auto* inner = std::get_if<chevron::start_element>(&**next)) {
         if (depth == 1) {
           ++children;
           if (out.first_child.empty())
-            out.first_child = std::string(start->name.local);
+            out.first_child = std::string(inner->name.local);
         }
         ++depth;
-      }
-      else if (std::holds_alternative<chevron::end_element>(**next))
+      } else if (std::holds_alternative<chevron::end_element>(**next)) {
         --depth;
-      else if (depth == 1)
+      } else if (depth == 1) {
         out.text += std::get<chevron::text>(**next).content;
-      else if (depth == 2 && children == 1)
+      } else if (depth == 2 && children == 1) {
         first_text += std::get<chevron::text>(**next).content;
+      }
     }
     if (ended) {
       std::optional<std::string> other;
       if (out.first_child == "see-other-host")
         other = std::move(first_text);
-      return std::unexpected(connect_error{connect_code::stream_error, out.first_child, std::nullopt, std::move(other)});
+      return std::unexpected(
+          connect_error{connect_code::stream_error, out.first_child, std::nullopt, std::move(other)});
     }
     return out;
   }
@@ -1220,8 +1536,11 @@ class negotiation {
   std::expected<void, connect_error> authenticate(const std::vector<std::string>& offered, bool secured) {
     const auto has = [&](std::string_view name) { return std::ranges::find(offered, name) != offered.end(); };
     const std::string nonce = o_.nonce.empty() ? sasl::random_nonce() : o_.nonce;
-    const std::optional<channel_binding> binding =
-        o_.channel_binding && secured ? o_.channel_binding() : std::nullopt;
+    std::optional<channel_binding> binding;
+    if constexpr (binding_transport<transport_type>) {
+      if (secured)
+        binding = s_.transport().channel_binding();
+    }
     if (binding && has("SCRAM-SHA-256-PLUS"))
       return scram<sasl::scram_sha256>("SCRAM-SHA-256-PLUS", nonce, &*binding, true);
     if (binding && has("SCRAM-SHA-1-PLUS"))
@@ -1286,27 +1605,25 @@ class negotiation {
     return {};
   }
 
+  // The answer read straight into its type: the JID bound, or the error.
   std::expected<void, connect_error> bind() {
     std::string request = "<iq type='set' id='bind_1'><bind xmlns='" + std::string(bind_namespace) + "'>";
     if (o_.resource)
       request += "<resource>" + escaped(*o_.resource) + "</resource>";
     write(request + "</bind></iq>");
-    auto read = chevron::read_one_of<iq::result, iq::error>(s_.source());
+    auto read = chevron::read_one_of<basic::iq_result<chevron::tagged<bind_result, chevron::any>>,
+                                     basic::iq_error<chevron::tagged<chevron::any>>>(s_.source());
     if (!read)
       return fail(connect_code::xml, "bind: " + read.error().where);
-    if (const auto* refused = std::get_if<iq::error>(&*read))
+    if (const auto* refused = std::get_if<1>(&*read))
       return std::unexpected(connect_error{connect_code::bind_refused, std::string(refused->reason.condition()),
                                            std::nullopt, std::nullopt, refused->reason});
-    auto* answer = &std::get<iq::result>(*read);
-    if (answer->id != "bind_1")
+    const auto& answer = std::get<0>(*read);
+    if (answer.id != "bind_1")
       return fail(connect_code::bind_refused, "not the answer to the bind");
-    for (const chevron::any& one : answer->payload)
-      if (one.uri == bind_namespace && one.local == "bind")
-        for (const chevron::any_node& child : one.children)
-          if (const auto* element = std::get_if<chevron::any>(&child.value); element && element->local == "jid")
-            for (const chevron::any_node& text : element->children)
-              if (const auto* piece = std::get_if<std::string>(&text.value))
-                jid += *piece;
+    if (!answer.payload.empty())
+      if (const bind_result* bound = answer.payload.front().template get_if<bind_result>())
+        jid = bound->jid.value_or("");
     if (jid.empty())
       return fail(connect_code::bind_refused, "no JID in the answer");
     return {};
@@ -1317,35 +1634,60 @@ class negotiation {
   bool authenticated_ = false;
 };
 
-}  // namespace tern::detail
-
-export namespace tern {
-
-// Connects over `input`, a range of bytes read as far as each step needs, and
-// `output`, an output iterator of char: stream, STARTTLS if a hook is given,
-// SCRAM-SHA-256, SCRAM-SHA-1 or PLAIN, and resource binding. The session, a
-// plain value, keeps `input`'s iterator and the output iterator; the range
-// has to outlive it.
-template <std::ranges::input_range Input, std::output_iterator<char> Out>
-std::expected<session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>, connect_error>
-try_connect(Input& input, Out output, const options& how) {
-  using result = session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>;
-  result s(std::ranges::begin(input), std::ranges::end(input), std::move(output));
-  detail::negotiation<result> steps(s, how);
+template <class Session>
+std::expected<Session, connect_error> establish(Session s, const options& how) {
+  negotiation<Session> steps(s, how);
   if (auto done = steps.run(); !done)
     return std::unexpected(done.error());
   s.bound_to(std::move(steps.jid));
   s.versions_rosters(steps.roster_versioning);
-  s.yield_with(how.yield);
   s.deliver_unhandled(how.deliver_unhandled);
   return s;
 }
 
+}  // namespace tern::detail
+
+export namespace tern {
+
+// Connects over the caller's transport -- kept by reference, so it has to
+// outlive the session: stream, STARTTLS where the transport can start TLS,
+// SCRAM (-PLUS where it gives channel binding) or PLAIN, and resource
+// binding. P, given first, is the protocol:
+//   auto s = tern::connect<my_protocol>(socket, how, tern::answering{...});
+template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
+std::expected<session<T&, P, Handlers, Yield>, connect_error>
+try_connect(T& transport, const options& how, Handlers handlers = {}, Yield yield = {}) {
+  return detail::establish(session<T&, P, Handlers, Yield>(transport, std::move(handlers), std::move(yield)), how);
+}
+
+// The same over a range of bytes (or of chunks), read as far as each step
+// needs, and an output iterator of char: no TLS. The range has to outlive
+// the session.
+template <class P = standard, std::ranges::input_range Input, std::output_iterator<char> Out,
+          class Handlers = answering<>, class Yield = no_yield>
+std::expected<session<range_transport<Input, Out>, P, Handlers, Yield>, connect_error>
+try_connect(Input& input, Out output, const options& how, Handlers handlers = {}, Yield yield = {}) {
+  return detail::establish(session<range_transport<Input, Out>, P, Handlers, Yield>(
+                               range_transport<Input, Out>(input, std::move(output)), std::move(handlers),
+                               std::move(yield)),
+                           how);
+}
+
 // The same, throwing: the session, or a tern::connect_failure.
-template <std::ranges::input_range Input, std::output_iterator<char> Out>
-session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>
-connect(Input& input, Out output, const options& how) {
-  auto made = try_connect(input, std::move(output), how);
+template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
+session<T&, P, Handlers, Yield> connect(T& transport, const options& how, Handlers handlers = {},
+                                        Yield yield = {}) {
+  auto made = try_connect<P>(transport, how, std::move(handlers), std::move(yield));
+  if (!made)
+    throw connect_failure(std::move(made).error());
+  return std::move(*made);
+}
+
+template <class P = standard, std::ranges::input_range Input, std::output_iterator<char> Out,
+          class Handlers = answering<>, class Yield = no_yield>
+session<range_transport<Input, Out>, P, Handlers, Yield> connect(Input& input, Out output, const options& how,
+                                                                 Handlers handlers = {}, Yield yield = {}) {
+  auto made = try_connect<P>(input, std::move(output), how, std::move(handlers), std::move(yield));
   if (!made)
     throw connect_failure(std::move(made).error());
   return std::move(*made);
