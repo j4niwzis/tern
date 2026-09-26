@@ -43,8 +43,8 @@ For now it is taken from a checkout: configure with
 
 ```cpp
 tern::iq::result answer = session.request(tern::iq::get{.payload = {chevron::to_any(ping{})}});
-server_version version = session.request(version_query{});  // version_query says: using kind = tern::iq::get; using answer = server_version;
-auto maybe = session.try_request(version_query{}, "romeo@example.net/orchard");  // std::expected instead
+server_version version = session.request<version_query>();   // version_query: using kind = tern::iq::get; using answer = server_version;
+auto maybe = session.try_request<version_query>({.to = "romeo@example.net/orchard"});  // std::expected instead
 ```
 
 An iq is sent -- with an id made up where it has none -- and its answer

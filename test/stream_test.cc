@@ -195,12 +195,12 @@ TEST(Stream, RequestAndAnswer) {
   EXPECT_EQ(pong->id, "tern-1");
   EXPECT_EQ(written, "<iq xmlns=\"jabber:client\" id=\"tern-1\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>");
 
-  const auto server_version = session->try_request(version_query{});
+  const auto server_version = session->try_request<version_query>();
   ASSERT_TRUE(server_version.has_value());
   EXPECT_EQ(server_version->name, "server");
   EXPECT_EQ(server_version->version, "1.0");
 
-  const auto refused = session->try_request(version_query{});
+  const auto refused = session->try_request<version_query>();
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().code, tern::request_code::error_reply);
   ASSERT_TRUE(refused.error().reply.has_value());

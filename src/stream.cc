@@ -401,6 +401,14 @@ template <class Q>
 concept query = chevron::described<Q> && chevron::described<typename Q::answer> &&
                 (std::same_as<typename Q::kind, iq::get> || std::same_as<typename Q::kind, iq::set>);
 
+// A typed request: whom to ask, and the query itself.
+template <class Query>
+struct asking {
+  std::optional<std::string> to;
+  std::optional<std::string> lang;
+  Query query{};
+};
+
 // A stream that is authenticated and bound: stanzas in, stanzas out.
 template <class I, class S, class Out>
 class session {
@@ -486,13 +494,14 @@ class session {
   }
 
   // The same, typed: a query that says what kind of request it is and what
-  // comes back -- using kind = tern::iq::get; using answer = the type -- is
-  // sent as the payload, and the answer's first child read into its answer.
+  // comes back -- using kind = tern::iq::get; using answer = the type -- asked
+  // of whom the request says:
+  //   session.request<version_query>({.to = "romeo@example.net/orchard"})
   template <query Query>
-  std::expected<typename Query::answer, request_error> try_request(const Query& payload,
-                                                                   std::optional<std::string> to = std::nullopt) {
-    typename Query::kind question{.to = std::move(to), .payload = {chevron::to_any(payload)}};
-    auto answer = try_request(std::move(question));
+  std::expected<typename Query::answer, request_error> try_request(asking<Query> question = {}) {
+    typename Query::kind sent{.to = std::move(question.to), .lang = std::move(question.lang),
+                              .payload = {chevron::to_any(question.query)}};
+    auto answer = try_request(std::move(sent));
     if (!answer)
       return std::unexpected(std::move(answer).error());
     std::optional<typename Query::answer> typed;
@@ -518,8 +527,8 @@ class session {
   }
 
   template <query Query>
-  typename Query::answer request(const Query& payload, std::optional<std::string> to = std::nullopt) {
-    auto answer = try_request(payload, std::move(to));
+  typename Query::answer request(asking<Query> question = {}) {
+    auto answer = try_request<Query>(std::move(question));
     if (!answer)
       throw request_failure(std::move(answer).error());
     return std::move(*answer);
