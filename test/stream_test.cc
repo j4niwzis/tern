@@ -585,6 +585,45 @@ TEST(Stream, SeeOtherHost) {
   }
 }
 
+// RFC 6120, 6.4.5: a challenge the client cannot take is answered with
+// <abort/>, and the server's <failure><aborted/></failure> read.
+TEST(Stream, SaslAbort) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-256</mechanism>"
+      "</mechanisms></stream:features><challenge xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>" +
+      b64("r=someone-else,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096") +
+      "</challenge><failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><aborted/></failure>";
+  std::string_view input = server;
+  std::string written;
+  const auto session = tern::try_connect(input, std::back_inserter(written), rfc7677());
+  ASSERT_FALSE(session.has_value());
+  EXPECT_EQ(session.error().code, tern::connect_code::authentication);
+  EXPECT_TRUE(written.ends_with("<abort xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>")) << written;
+}
+
+// RFC 6121, 5.2.3 and 5.2.5: <subject/> and <thread/>, read and written.
+TEST(Stream, SubjectAndThread) {
+  const std::string text =
+      "<message xmlns='jabber:client' to='juliet@example.com' type='chat'><subject>I implore you!</subject>"
+      "<body>Wherefore art thou, Romeo?</body>"
+      "<thread parent='7edac73ab41e45c4aafa7b2d7b749080'>e0ffe42b28561960c6b12b944a092794b9683a38</thread>"
+      "</message>";
+  const auto read = chevron::read<tern::message::chat>(std::string_view(text) | chevron::events);
+  ASSERT_TRUE(read.has_value());
+  EXPECT_EQ(read->subject, "I implore you!");
+  ASSERT_TRUE(read->thread.has_value());
+  EXPECT_EQ(read->thread->id, "e0ffe42b28561960c6b12b944a092794b9683a38");
+  EXPECT_EQ(read->thread->parent, "7edac73ab41e45c4aafa7b2d7b749080");
+  EXPECT_TRUE(read->payload.empty());
+  const std::string written = chevron::to_xml(*read) | std::ranges::to<std::string>();
+  const auto again = chevron::read<tern::message::chat>(std::string_view(written) | chevron::events);
+  ASSERT_TRUE(again.has_value()) << written;
+  EXPECT_EQ(again->thread->id, read->thread->id);
+  EXPECT_EQ(again->thread->parent, read->thread->parent);
+  EXPECT_EQ(again->subject, read->subject);
+}
+
 // RFC 5802, 6 and RFC 9266: over TLS, with the TLS layer's binding data, a
 // -PLUS mechanism where offered, the binding in the GS2 header and in c=;
 // where none is offered, y,, says so.

@@ -54,27 +54,44 @@ constexpr auto xml_schema(chevron::type<stanza_error>) {
       .members(attribute(), unknown_children());
 }
 
+// A conversation a message belongs to (RFC 6121, 5.2.5): its identifier,
+// and the thread it was spun off from.
+struct thread {
+  std::string id;
+  std::optional<std::string> parent;
+};
+
+constexpr auto xml_schema(chevron::type<thread>) {
+  using namespace chevron::members;
+  return chevron::schema<thread>().name(client_namespace, "thread").members(text(), attribute());
+}
+
 // The stanzas, a type for each kind: what the kind can carry and nothing
 // else. What they carry beyond what is named is kept whole, in payload.
 namespace message {
 struct normal {
-  std::optional<std::string> to, from, id, lang, body;
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
   std::vector<chevron::any> payload;
 };
 struct chat {
-  std::optional<std::string> to, from, id, lang, body;
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
   std::vector<chevron::any> payload;
 };
 struct groupchat {
-  std::optional<std::string> to, from, id, lang, body;
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
   std::vector<chevron::any> payload;
 };
 struct headline {
-  std::optional<std::string> to, from, id, lang, body;
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
   std::vector<chevron::any> payload;
 };
 struct error {
-  std::optional<std::string> to, from, id, lang, body;
+  std::optional<std::string> to, from, id, lang, subject, body;
+  std::optional<tern::thread> thread;
   stanza_error reason;  // the <error/>
   std::vector<chevron::any> payload;
 };
@@ -1135,8 +1152,11 @@ class negotiation {
       return fail(connect_code::not_authorized,
                   challenge->local == "failure" ? challenge->first_child : challenge->local);
     auto reply = client.answer(text_of(challenge->text));
-    if (!reply)
+    if (!reply) {
+      write("<abort xmlns='" + std::string(sasl_namespace) + "'/>");
+      (void)read_nonza();  // <failure><aborted/></failure>, or the end
       return std::unexpected(connect_error{connect_code::authentication, reply.error().detail, reply.error()});
+    }
     write("<response xmlns='" + std::string(sasl_namespace) + "'>" +
           crypto::base64_encode(crypto::to_bytes(*reply)) + "</response>");
     auto outcome = read_nonza();

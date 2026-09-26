@@ -23,7 +23,7 @@ What the RFCs require only of servers is left out.
 | 6.4.2 | SCRAM as RFC 5802/7677: nonce, salted password, proofs, the server's signature verified | done | `Sasl.*`, `Stream.ScramBindAndStanzas` |
 | 6.4.3 | Channel binding (the -PLUS mechanisms) | done: SCRAM-SHA-256-PLUS and SCRAM-SHA-1-PLUS with the data the TLS layer gives (`options::channel_binding`), `y,,` where none is offered | `Stream.ChannelBinding` |
 | 6.4.5 | SASL `<failure/>`: its condition reported | done: `connect_code::not_authorized`, the condition as detail | `Stream.FailureConditionAndKeepalives` |
-| 6.4.1 | `<abort/>` to give up an exchange | not yet | — |
+| 6.4.1, 6.4.5 | `<abort/>` to give up an exchange | done: a challenge SCRAM cannot take is answered with `<abort/>`, and the `<failure><aborted/></failure>` read | `Stream.SaslAbort` |
 | 7.4 | Resource binding requested, with or without a resource | done | `Stream.ScramBindAndStanzas` |
 | 7.6.2 | The resource the server assigned is the one used | done: the JID from the result | `Stream.ScramBindAndStanzas` |
 | 7.6.2.2 | A `conflict` or other error to binding reported | partial: reported as bind refused, with the condition | — |
@@ -57,4 +57,4 @@ What the RFCs require only of servers is left out.
 | 4.2 | Initial presence after the roster | done: `available()`; asking for the roster first is the caller's | `Stream.PresenceAndSubscriptions` |
 | 4.5 | Unavailable presence before closing the stream | done: `close()` sends it where presence was sent | `Stream.PresenceAndSubscriptions` |
 | 5.2.2 | Message types: chat, groupchat, headline, normal, error | done | `Stream.ScramBindAndStanzas` |
-| 5.2.3 | `<thread/>` kept and passed on | partial: kept in payload, not a member | — |
+| 5.2.3, 5.2.5 | `<subject/>` and `<thread/>` (with `parent`) | done: members `subject` and `thread` of every message type | `Stream.SubjectAndThread` |
