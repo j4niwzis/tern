@@ -19,7 +19,7 @@ for (auto&& stanza : session.stanzas()) {     // ends where the server ends the 
   }
   std::visit(handle, *stanza);                  // message, presence or iq
 }
-session.send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "hi"});
+session.send(tern::message{.to = "romeo@example.net", .type = tern::message_types::chat{}, .body = "hi"});
 ```
 
 - **Negotiation** (RFC 6120): the stream, STARTTLS through a hook the caller
@@ -42,9 +42,9 @@ For now it is taken from a checkout: configure with
 ## Requests
 
 ```cpp
-tern::iq answer = session.request(tern::iq{.type = "get", .payload = {chevron::to_any(ping{})}});
-auto version = session.request<server_version>(tern::get, version_query{});   // typed both ways
-auto maybe = session.try_request<server_version>(tern::get, version_query{}); // std::expected instead
+tern::iq answer = session.request(tern::iq{.type = tern::iq_types::get{}, .payload = {chevron::to_any(ping{})}});
+auto version = session.request<server_version>(tern::iq_types::get{}, version_query{});   // typed both ways
+auto maybe = session.try_request<server_version>(tern::iq_types::get{}, version_query{}); // std::expected instead
 ```
 
 An iq is sent -- with an id made up where it has none -- and its answer
@@ -58,3 +58,11 @@ time, and the others wait in `options::yield`.
 Every call that can fail comes in two forms, as in scan: `connect`, `receive`
 and `request` throw; `try_connect`, `try_receive` and `try_request` hand a
 `std::expected` back.
+
+## Kinds
+
+A stanza's type is a `std::variant` of empty types -- `tern::message_types::chat`,
+`tern::presence_types::subscribe`, `tern::iq_types::get` and so on -- told
+apart with `std::visit`; absent means the default. A stanza of the error kind
+carries the `<error/>` parsed: `error->type` (cancel, continue, modify, auth,
+wait) and `error->condition()`, the name of the condition element.
