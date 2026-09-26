@@ -5,3 +5,4 @@ export import tern.crypto;
 export import tern.sasl;
 export import tern.stream;
 export import tern.jid;
+export import tern.srv;

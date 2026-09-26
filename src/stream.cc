@@ -325,6 +325,19 @@ constexpr auto xml_schema(chevron::type<roster>) {
   return chevron::schema<roster>().name(roster_namespace, "query").members(attribute());
 }
 
+// A contact added or changed (RFC 6121, 2.3, 2.4), or with subscription
+// remove taken out (2.5): one item a set.
+struct roster_set {
+  using kind = tern::set;
+  using answer = void;
+  std::vector<roster_item> items;
+};
+
+constexpr auto xml_schema(chevron::type<roster_set>) {
+  using namespace chevron::members;
+  return chevron::schema<roster_set>().name(roster_namespace, "query").members(child("item"));
+}
+
 // XEP-0092: an entity's software.
 struct version {
   using kind = tern::get;
@@ -549,6 +562,307 @@ constexpr auto xml_schema(chevron::type<iq_error<X, R>>) {
 
 }  // namespace basic
 
+// XEP-0203: when a stanza was first sent, and where it was held.
+struct delay {
+  std::string stamp;
+  std::optional<std::string> from;
+  std::optional<std::string> reason;
+};
+constexpr auto xml_schema(chevron::type<delay>) {
+  using namespace chevron::members;
+  return chevron::schema<delay>().name("urn:xmpp:delay", "delay").members(attribute(), attribute(), text());
+}
+
+// XEP-0297: a message forwarded, and when it was sent. What the message
+// carries is kept as it came.
+namespace forward {
+using plain = chevron::tagged<chevron::any>;
+using message = chevron::tagged<basic::message_normal<plain>, basic::message_chat<plain>,
+                                basic::message_groupchat<plain>, basic::message_headline<plain>,
+                                basic::message_error<plain>>;
+struct forwarded {
+  std::optional<tern::delay> delay;
+  std::optional<forward::message> message;
+};
+constexpr auto xml_schema(chevron::type<forwarded>) {
+  return chevron::schema<forwarded>().name("urn:xmpp:forward:0", "forwarded");
+}
+}  // namespace forward
+
+// XEP-0280: copies of one's messages sent and received by one's other
+// resources.
+namespace carbons {
+inline constexpr std::string_view carbons_namespace = "urn:xmpp:carbons:2";
+struct received {
+  forward::forwarded forwarded;
+};
+struct sent {
+  forward::forwarded forwarded;
+};
+// In a message: no copies of it.
+struct private_ {};
+constexpr auto xml_schema(chevron::type<received>) {
+  return chevron::schema<received>().name(carbons_namespace, "received");
+}
+constexpr auto xml_schema(chevron::type<sent>) { return chevron::schema<sent>().name(carbons_namespace, "sent"); }
+constexpr auto xml_schema(chevron::type<private_>) {
+  return chevron::schema<private_>().name(carbons_namespace, "private");
+}
+}  // namespace carbons
+
+// XEP-0059: a page of a result set.
+namespace rsm {
+struct set {
+  std::optional<int> max;
+  std::optional<std::string> after, before, first, last;
+  std::optional<int> count;
+};
+constexpr auto xml_schema(chevron::type<set>) {
+  return chevron::schema<set>().name("http://jabber.org/protocol/rsm", "set");
+}
+}  // namespace rsm
+
+// XEP-0004: a data form, as far as a query's filter needs.
+namespace data_form {
+struct field {
+  std::optional<std::string> var;
+  std::optional<std::string> type;
+  std::vector<std::string> value;
+};
+constexpr auto xml_schema(chevron::type<field>) {
+  using namespace chevron::members;
+  return chevron::schema<field>().name("jabber:x:data", "field").members(attribute(), attribute(), child_text());
+}
+struct form {
+  std::string type;
+  std::vector<data_form::field> fields;
+};
+constexpr auto xml_schema(chevron::type<form>) {
+  using namespace chevron::members;
+  return chevron::schema<form>().name("jabber:x:data", "x").members(attribute(), child("field"));
+}
+}  // namespace data_form
+
+// XEP-0313: the archive of one's messages, asked for a page at a time.
+namespace mam {
+inline constexpr std::string_view mam_namespace = "urn:xmpp:mam:2";
+struct fin {
+  std::optional<bool> complete;
+  std::optional<rsm::set> page;
+};
+constexpr auto xml_schema(chevron::type<fin>) {
+  using namespace chevron::members;
+  return chevron::schema<fin>().name(mam_namespace, "fin").members(attribute(), _);
+}
+// One archived message, in a message of its own before the answer.
+struct result {
+  std::optional<std::string> queryid;
+  std::string id;
+  forward::forwarded forwarded;
+};
+constexpr auto xml_schema(chevron::type<result>) {
+  using namespace chevron::members;
+  return chevron::schema<result>().name(mam_namespace, "result").members(attribute(), attribute(), _);
+}
+struct query {
+  using kind = tern::set;
+  using answer = mam::fin;
+  std::optional<std::string> queryid;
+  std::optional<data_form::form> filter;
+  std::optional<rsm::set> page;
+};
+constexpr auto xml_schema(chevron::type<query>) {
+  using namespace chevron::members;
+  return chevron::schema<query>().name(mam_namespace, "query").members(attribute(), _, _);
+}
+// The filter of 4.1: whose messages, from when, until when.
+inline data_form::form filter(std::optional<std::string> with, std::optional<std::string> start = {},
+                              std::optional<std::string> end = {}) {
+  data_form::form out{.type = "submit"};
+  out.fields.push_back({.var = "FORM_TYPE", .type = "hidden", .value = {std::string(mam_namespace)}});
+  if (with)
+    out.fields.push_back({.var = "with", .value = {std::move(*with)}});
+  if (start)
+    out.fields.push_back({.var = "start", .value = {std::move(*start)}});
+  if (end)
+    out.fields.push_back({.var = "end", .value = {std::move(*end)}});
+  return out;
+}
+}  // namespace mam
+
+// XEP-0030: what an entity is and what it does, and the items it has.
+namespace disco {
+inline constexpr std::string_view info_namespace = "http://jabber.org/protocol/disco#info";
+inline constexpr std::string_view items_namespace = "http://jabber.org/protocol/disco#items";
+struct identity {
+  std::string category, type;
+  std::optional<std::string> lang, name;
+};
+constexpr auto xml_schema(chevron::type<identity>) {
+  using namespace chevron::members;
+  return chevron::schema<identity>()
+      .name(info_namespace, "identity")
+      .members(attribute(), attribute(), attribute("lang", xml_namespace), attribute());
+}
+struct feature {
+  std::string var;
+};
+constexpr auto xml_schema(chevron::type<feature>) {
+  using namespace chevron::members;
+  return chevron::schema<feature>().name(info_namespace, "feature").members(attribute());
+}
+struct info {
+  std::optional<std::string> node;
+  std::vector<disco::identity> identities;
+  std::vector<disco::feature> features;
+};
+constexpr auto xml_schema(chevron::type<info>) {
+  using namespace chevron::members;
+  return chevron::schema<info>().name(info_namespace, "query").members(attribute(), child("identity"), child("feature"));
+}
+struct item {
+  std::string jid;
+  std::optional<std::string> node, name;
+};
+constexpr auto xml_schema(chevron::type<item>) {
+  using namespace chevron::members;
+  return chevron::schema<item>().name(items_namespace, "item").members(attribute(), attribute(), attribute());
+}
+struct items {
+  std::optional<std::string> node;
+  std::vector<disco::item> list;
+};
+constexpr auto xml_schema(chevron::type<items>) {
+  using namespace chevron::members;
+  return chevron::schema<items>().name(items_namespace, "query").members(attribute(), child("item"));
+}
+}  // namespace disco
+
+// XEP-0115: what an entity can do, in its presence, as a hash of its info.
+namespace caps {
+inline constexpr std::string_view caps_namespace = "http://jabber.org/protocol/caps";
+struct c {
+  std::string hash, node, ver;
+  std::optional<std::string> ext;
+};
+constexpr auto xml_schema(chevron::type<c>) {
+  using namespace chevron::members;
+  return chevron::schema<c>().name(caps_namespace, "c").members(attribute(), attribute(), attribute(), attribute());
+}
+// 5.1: the verification string of an entity's info, with SHA-1.
+inline std::string ver_of(const disco::info& info) {
+  std::vector<std::string> identities, features;
+  for (const disco::identity& one : info.identities)
+    identities.push_back(one.category + "/" + one.type + "/" + one.lang.value_or("") + "/" + one.name.value_or(""));
+  for (const disco::feature& one : info.features)
+    features.push_back(one.var);
+  std::ranges::sort(identities);
+  std::ranges::sort(features);
+  std::string text;
+  for (const std::string& one : identities)
+    text += one + "<";
+  for (const std::string& one : features)
+    text += one + "<";
+  return crypto::base64_encode(crypto::sha1::digest(crypto::to_bytes(text)));
+}
+}  // namespace caps
+
+// XEP-0198: stanzas acknowledged, and a stream resumed where it broke.
+namespace sm {
+inline constexpr std::string_view sm_namespace = "urn:xmpp:sm:3";
+struct feature {};
+struct r {};
+struct a {
+  std::uint32_t h = 0;
+};
+struct enabled {
+  std::optional<std::string> id;
+  std::optional<bool> resume;
+  std::optional<std::string> location;
+  std::optional<std::uint32_t> max;
+};
+struct resumed {
+  std::uint32_t h = 0;
+  std::string previd;
+};
+struct failed {
+  std::optional<std::uint32_t> h;
+  std::optional<stanza_condition_t> what;
+};
+constexpr auto xml_schema(chevron::type<feature>) { return chevron::schema<feature>().name(sm_namespace, "sm"); }
+constexpr auto xml_schema(chevron::type<r>) { return chevron::schema<r>().name(sm_namespace, "r"); }
+constexpr auto xml_schema(chevron::type<a>) {
+  using namespace chevron::members;
+  return chevron::schema<a>().name(sm_namespace, "a").members(attribute());
+}
+constexpr auto xml_schema(chevron::type<enabled>) {
+  using namespace chevron::members;
+  return chevron::schema<enabled>()
+      .name(sm_namespace, "enabled")
+      .members(attribute(), attribute(), attribute(), attribute());
+}
+constexpr auto xml_schema(chevron::type<resumed>) {
+  using namespace chevron::members;
+  return chevron::schema<resumed>().name(sm_namespace, "resumed").members(attribute(), attribute());
+}
+constexpr auto xml_schema(chevron::type<failed>) {
+  using namespace chevron::members;
+  return chevron::schema<failed>().name(sm_namespace, "failed").members(attribute(), _);
+}
+}  // namespace sm
+
+// What a stream to resume needs: kept by the caller from session.sm().
+struct sm_state {
+  std::string id;
+  std::string jid;
+  std::uint32_t inbound = 0;
+  std::uint32_t acked = 0;
+  std::vector<std::string> unacked;  // the stanzas the server has not acknowledged, as written
+};
+
+namespace query {
+// XEP-0030.
+struct disco_info {
+  using kind = tern::get;
+  using answer = tern::disco::info;
+  std::optional<std::string> node;
+};
+constexpr auto xml_schema(chevron::type<disco_info>) {
+  using namespace chevron::members;
+  return chevron::schema<disco_info>().name(disco::info_namespace, "query").members(attribute());
+}
+struct disco_items {
+  using kind = tern::get;
+  using answer = tern::disco::items;
+  std::optional<std::string> node;
+};
+constexpr auto xml_schema(chevron::type<disco_items>) {
+  using namespace chevron::members;
+  return chevron::schema<disco_items>().name(disco::items_namespace, "query").members(attribute());
+}
+// XEP-0280.
+struct carbons_enable {
+  using kind = tern::set;
+  using answer = void;
+};
+constexpr auto xml_schema(chevron::type<carbons_enable>) {
+  return chevron::schema<carbons_enable>().name(carbons::carbons_namespace, "enable");
+}
+struct carbons_disable {
+  using kind = tern::set;
+  using answer = void;
+};
+constexpr auto xml_schema(chevron::type<carbons_disable>) {
+  return chevron::schema<carbons_disable>().name(carbons::carbons_namespace, "disable");
+}
+}  // namespace query
+
+// A page of the archive (XEP-0313): the messages, and how the page ends.
+struct archive_page {
+  std::vector<mam::result> results;
+  mam::fin fin;
+};
+
 // A protocol: the types a session reads what it receives into. queries<> for
 // what gets and sets carry, answers<> for what results carry, extensions<>
 // for what messages and presence carry.
@@ -658,14 +972,17 @@ struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>, Un
                                 typename presence::subscribed, typename presence::unsubscribe,
                                 typename presence::unsubscribed, typename presence::probe,
                                 typename presence::error, typename iq::get, typename iq::set, typename iq::result,
-                                typename iq::error, stream_error>(source);
+                                typename iq::error, stream_error, sm::r, sm::a>(source);
   }
 };
 
-// What RFC 6120 and 6121 need, and the version and ping every client is
-// asked: roster pushes, version and ping as queries; the roster and versions
-// as answers.
-using standard = protocol<queries<roster, query::version, query::ping>, answers<roster, version>, extensions<>>;
+// What RFC 6120 and 6121 need, and what every client is asked and uses:
+// roster pushes, version, ping and disco as queries; the roster, versions,
+// disco and the archive's end as answers; delay, caps, carbons and archived
+// messages as extensions.
+using standard = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
+                          answers<roster, version, disco::info, disco::items, mam::fin>,
+                          extensions<delay, caps::c, carbons::received, carbons::sent, mam::result>>;
 
 // The standard protocol's stanzas, by their plain names.
 namespace message {
@@ -766,6 +1083,7 @@ struct features {
   std::optional<mechanisms_feature> mechanisms;
   std::optional<bind_feature> bind;
   std::optional<rosterver_feature> ver;
+  std::optional<sm::feature> sm;
 };
 
 constexpr auto xml_schema(chevron::type<tls_required>) {
@@ -823,6 +1141,7 @@ enum class connect_code : std::uint8_t {
   bind_refused,      // the server refused the resource
   tls_failed,        // the transport could not start TLS
   malformed_stanza,  // a stanza did not fit its type: passed over, and the stream goes on
+  resume_failed,     // the server would not resume the stream (XEP-0198)
 };
 
 // A stanza that could not be read into its type: what it was, whose, and
@@ -912,10 +1231,19 @@ struct options {
   bool plain_without_tls = false;
   std::uint32_t minimum_iterations = 4096;
   std::string nonce = {};  // for SCRAM; random where empty
+  // XEP-0198: acknowledge stanzas, and make the stream resumable, where the
+  // server offers it.
+  bool stream_management = false;
+  // XEP-0030 and XEP-0115: what this client says it is. tern adds what it
+  // does itself: disco, caps, ping.
+  disco::info self = {.identities = {{.category = "client", .type = "pc", .name = "tern"}}};
+  std::string caps_node = "https://github.com/j4niwzis/tern";
   // A get or a set nobody handles is answered with service-unavailable, as
   // RFC 6120, 8.2.3 requires a reply; with this, it is handed out by
   // receive() and stanzas() instead, and answering it is the caller's.
   bool deliver_unhandled = false;
+  // The language of what this client says (RFC 6120, 4.7.4), on its stream.
+  std::string lang = "en";
 };
 
 // The handlers of incoming queries, given at connect(): each a callable
@@ -1177,6 +1505,57 @@ class session {
   // Whether the server said it versions rosters (RFC 6121, 2.6.1).
   bool roster_versioning() const noexcept { return roster_versioning_; }
 
+  // XEP-0198: what resuming this stream needs, where it can be resumed.
+  std::optional<sm_state> sm() const {
+    if (!sm_enabled_ || sm_id_.empty())
+      return std::nullopt;
+    return sm_state{sm_id_, jid_, inbound_, acked_, std::vector<std::string>(unacked_.begin(), unacked_.end())};
+  }
+
+  // XEP-0198: the server asked to say how many stanzas it has handled.
+  void request_ack() {
+    if (sm_enabled_)
+      write_raw("<r xmlns='urn:xmpp:sm:3'/>");
+  }
+
+  // XEP-0313: a page of the archive -- the messages that answer the query,
+  // read straight into their types, and how the page ends.
+  std::expected<archive_page, request_error> try_archive(mam::query query, std::optional<std::string> to = {}) {
+    static_assert(P::template answers_with<mam::fin> && P::extension::template can_hold<mam::result>,
+                  "tern: archive() needs mam::fin among the answers<> and mam::result among the extensions<>");
+    if (!query.queryid)
+      query.queryid = "tern-mam-" + std::to_string(++last_id_);
+    const std::string queryid = *query.queryid;
+    auto fin = try_request<mam::query>({.to = std::move(to), .query = std::move(query)});
+    if (!fin)
+      return std::unexpected(std::move(fin).error());
+    archive_page page{.fin = std::move(*fin)};
+    // The results came as messages before the answer, and wait to be taken.
+    for (auto at = pending_.begin(); at != pending_.end();) {
+      bool taken = false;
+      if (*at)
+        if (auto* message = std::get_if<message_t>(&**at))
+          std::visit(
+              [&](auto& one) {
+                for (auto& carried : one.payload)
+                  if (auto* result = carried.template get_if<mam::result>(); result && result->queryid == queryid) {
+                    page.results.push_back(std::move(*result));
+                    taken = true;
+                  }
+              },
+              *message);
+      at = taken ? pending_.erase(at) : std::next(at);
+    }
+    return page;
+  }
+
+  archive_page archive(mam::query query, std::optional<std::string> to = {}) {
+    auto page = try_archive(std::move(query), std::move(to));
+    if (!page)
+      throw request_failure(std::move(page).error());
+    return std::move(*page);
+  }
+
   // The next stanza, as it arrives; nothing where the stream has ended
   // cleanly; or the error.
   std::expected<std::optional<stanza_t>, connect_error> try_receive() {
@@ -1350,10 +1729,13 @@ class session {
   stanza_view stanzas() { return stanza_view(*this); }
 
   // A stanza, written to the transport, and flushed.
+  // With stream management, it is kept until the server acknowledges it.
   template <chevron::described Stanza>
   void send(const Stanza& one) {
     out_.clear();
     chevron::write(std::back_inserter(out_), one);
+    if (sm_enabled_)
+      unacked_.push_back(out_);
     transport_.write(out_);
     transport_.flush();
   }
@@ -1374,9 +1756,14 @@ class session {
 
   // Presence (RFC 6121, 4): available -- the initial presence after the
   // roster, or a change of it -- and, to one address, directed.
+  // Broadcast, it says what this client can do (XEP-0115), where the
+  // protocol's extensions have caps.
   void available(typename P::presence::available said = {}) {
-    if (!said.to)
+    if (!said.to) {
       announced_ = true;
+      if constexpr (P::extension::template can_hold<caps::c>)
+        said.payload.push_back(caps::c{.hash = "sha-1", .node = caps_node_, .ver = caps::ver_of(self_)});
+    }
     send(said);
   }
 
@@ -1420,6 +1807,28 @@ class session {
     return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt});
   }
 
+  // A contact added, or changed -- its name, its groups (RFC 6121, 2.3,
+  // 2.4) -- by its bare JID; the server pushes the change after.
+  std::expected<void, request_error> try_update_contact(roster_item item) {
+    item.subscription.reset();  // the client does not set it (2.1.2.5), but for remove
+    item.ask.reset();
+    return try_request<query::roster_set>({.query = {.items = {std::move(item)}}});
+  }
+  void update_contact(roster_item item) {
+    if (auto done = try_update_contact(std::move(item)); !done)
+      throw request_failure(std::move(done).error());
+  }
+
+  // A contact taken out of the roster (2.5), subscriptions both ways ended.
+  std::expected<void, request_error> try_remove_contact(std::string_view jid) {
+    roster_item item{.jid = std::string(jid), .subscription = tern::subscription::remove{}};
+    return try_request<query::roster_set>({.query = {.items = {std::move(item)}}});
+  }
+  void remove_contact(std::string_view jid) {
+    if (auto done = try_remove_contact(jid); !done)
+      throw request_failure(std::move(done).error());
+  }
+
   // The same, throwing a tern::request_failure.
   void sync(roster_cache& cache) {
     if (auto done = try_sync(cache); !done)
@@ -1435,9 +1844,67 @@ class session {
   void bound_to(std::string jid) { jid_ = std::move(jid); }
   void versions_rosters(bool on) { roster_versioning_ = on; }
   void deliver_unhandled(bool deliver) { deliver_unhandled_ = deliver; }
+  void describes_itself(const options& how) {
+    self_ = how.self;
+    for (std::string_view var : {disco::info_namespace, caps::caps_namespace, std::string_view("urn:xmpp:ping")})
+      if (std::ranges::find(self_.features, var, &disco::feature::var) == self_.features.end())
+        self_.features.push_back({std::string(var)});
+    caps_node_ = how.caps_node;
+  }
+  void stream_managed(const sm::enabled& enabled) {
+    sm_enabled_ = true;
+    if (enabled.resume.value_or(false))
+      sm_id_ = enabled.id.value_or("");
+  }
+  // A stream resumed: the old one's count, and what it had not had
+  // acknowledged sent again.
+  void resumed_from(const sm_state& state, std::uint32_t h) {
+    sm_enabled_ = true;
+    sm_id_ = state.id;
+    inbound_ = state.inbound;
+    acked_ = state.acked;
+    unacked_.assign(state.unacked.begin(), state.unacked.end());
+    acknowledged(h);
+    for (const std::string& again : unacked_)
+      transport_.write(again);
+    transport_.flush();
+  }
 
  private:
   static constexpr bool can_yield = !std::same_as<Yield, no_yield>;
+
+  void write_raw(std::string_view text) {
+    transport_.write(text);
+    transport_.flush();
+  }
+
+  // The server has handled h stanzas of ours: those are dropped.
+  void acknowledged(std::uint32_t h) {
+    while (acked_ != h && !unacked_.empty()) {
+      unacked_.pop_front();
+      ++acked_;
+    }
+  }
+
+  // What tern answers itself, where no handler took the query: disco (with
+  // this client's info, for its caps node too), and ping.
+  template <class Question, class Query>
+  bool answered_by_tern(const Question& question, const Query& query) {
+    if constexpr (std::same_as<Query, query::disco_info>) {
+      disco::info out = self_;
+      out.node = query.node;
+      answer(question, std::move(out));
+      return true;
+    } else if constexpr (std::same_as<Query, query::disco_items>) {
+      answer(question, disco::items{.node = query.node});
+      return true;
+    } else if constexpr (std::same_as<Query, query::ping>) {
+      answer(question);
+      return true;
+    } else {
+      return false;
+    }
+  }
 
   std::expected<std::optional<stanza_t>, connect_error> take_pending() {
     auto one = std::move(pending_.front());
@@ -1554,7 +2021,7 @@ class session {
               bool taken = false;
               std::as_const(question.payload.front()).with([&]<class Query>(const Query& query) {
                 if constexpr (!std::same_as<Query, chevron::any>)
-                  taken = handled(question, query);
+                  taken = handled(question, query) || answered_by_tern(question, query);
               });
               if (taken)
                 return true;
@@ -1595,7 +2062,35 @@ class session {
   }
 
   std::expected<std::optional<stanza_t>, connect_error> read_stanza() {
+    for (;;) {
+      auto one = read_one_stanza();
+      if (one && !*one && acks_read_) {
+        acks_read_ = false;
+        continue;
+      }
+      return one;
+    }
+  }
+
+  // One stanza; XEP-0198's <r/> answered and <a/> taken on the way, and each
+  // stanza read, fitting its type or not, counted.
+  std::expected<std::optional<stanza_t>, connect_error> read_one_stanza() {
     auto one = P::read_one(source_);
+    if (one) {
+      if (std::holds_alternative<sm::r>(*one)) {
+        if (sm_enabled_)
+          write_raw("<a xmlns='urn:xmpp:sm:3' h='" + std::to_string(inbound_) + "'/>");
+        acks_read_ = true;
+        return std::nullopt;
+      }
+      if (const auto* ack = std::get_if<sm::a>(&*one)) {
+        acknowledged(ack->h);
+        acks_read_ = true;
+        return std::nullopt;
+      }
+    }
+    if (sm_enabled_ && (one || one.error().code != chevron::read_code::unexpected_element))
+      ++inbound_;
     // A stream error ends the stream: its condition is the failure.
     if (one) {
       if (const auto* ended = std::get_if<stream_error>(&*one))
@@ -1604,7 +2099,7 @@ class session {
       return std::visit(
           [](auto&& value) {
             using type = std::remove_cvref_t<decltype(value)>;
-            if constexpr (std::same_as<type, stream_error>)
+            if constexpr (std::same_as<type, stream_error> || std::same_as<type, sm::r> || std::same_as<type, sm::a>)
               return std::optional<stanza_t>();
             else if constexpr (requires { message_t(std::move(value)); } && !requires { presence_t(std::move(value)); })
               return std::optional<stanza_t>(stanza_t(message_t(std::move(value))));
@@ -1655,6 +2150,14 @@ class session {
   std::optional<connect_error> failed_;
   bool deliver_unhandled_ = false;
   bool announced_ = false;
+  bool acks_read_ = false;
+  disco::info self_;
+  std::string caps_node_;
+  bool sm_enabled_ = false;
+  std::string sm_id_;
+  std::uint32_t inbound_ = 0;
+  std::uint32_t acked_ = 0;
+  std::deque<std::string> unacked_;
 };
 
 template <class T, class P, class Handlers, class Yield>
@@ -1719,7 +2222,7 @@ class negotiation {
   using transport_type = typename Session::transport_type;
 
  public:
-  negotiation(Session& s, const options& o) : s_(s), o_(o) {}
+  negotiation(Session& s, const options& o, const sm_state* resume = nullptr) : s_(s), o_(o), resume_(resume) {}
 
   std::expected<void, connect_error> run() {
     bool secured = false;
@@ -1764,15 +2267,29 @@ class negotiation {
         s_.source().restart();
         continue;
       }
+      roster_versioning = offered->ver.has_value();
+      if (resume_)
+        return resume();
       if (!offered->bind)
         return fail(connect_code::bind_refused, "no bind offered");
-      roster_versioning = offered->ver.has_value();
-      return bind();
+      if (auto bound = bind(); !bound)
+        return bound;
+      if (o_.stream_management && offered->sm) {
+        write("<enable xmlns='urn:xmpp:sm:3' resume='true'/>");
+        auto answer = chevron::read_one_of<sm::enabled, sm::failed>(s_.source());
+        if (!answer)
+          return fail(connect_code::xml, "stream management: " + answer.error().where);
+        if (const auto* on = std::get_if<sm::enabled>(&*answer))
+          enabled = *on;
+      }
+      return {};
     }
   }
 
   std::string jid;
   bool roster_versioning = false;
+  std::optional<sm::enabled> enabled;  // XEP-0198, where it was enabled
+  std::uint32_t resumed_h = 0;         // where resumed: what the server had handled
 
  private:
   std::unexpected<connect_error> fail(connect_code code, std::string detail) const {
@@ -1787,7 +2304,8 @@ class negotiation {
   // Our stream header, then the server's.
   std::expected<void, connect_error> open() {
     write("<?xml version='1.0'?><stream:stream to='" + escaped(o_.domain) + "' from='" +
-          escaped(o_.username + "@" + o_.domain) + "' version='1.0' xmlns='" + std::string(client_namespace) +
+          escaped(o_.username + "@" + o_.domain) + "' version='1.0' xml:lang='" + escaped(o_.lang) + "' xmlns='" +
+          std::string(client_namespace) +
           "' xmlns:stream='" + std::string(stream_namespace) + "'>");
     auto header = s_.source().next();
     if (!header)
@@ -1915,6 +2433,21 @@ class negotiation {
     return {};
   }
 
+  // XEP-0198, 5: the old stream taken up again, instead of binding.
+  std::expected<void, connect_error> resume() {
+    write("<resume xmlns='urn:xmpp:sm:3' h='" + std::to_string(resume_->inbound) + "' previd='" +
+          escaped(resume_->id) + "'/>");
+    auto answer = chevron::read_one_of<sm::resumed, sm::failed>(s_.source());
+    if (!answer)
+      return fail(connect_code::xml, "resume: " + answer.error().where);
+    if (const auto* refused = std::get_if<sm::failed>(&*answer))
+      return fail(connect_code::resume_failed,
+                  refused->what ? std::string(condition_name(*refused->what)) : std::string());
+    resumed_h = std::get<sm::resumed>(*answer).h;
+    jid = resume_->jid;
+    return {};
+  }
+
   // The answer read straight into its type: the JID bound, or the error.
   std::expected<void, connect_error> bind() {
     std::string request = "<iq type='set' id='bind_1'><bind xmlns='" + std::string(bind_namespace) + "'>";
@@ -1941,17 +2474,23 @@ class negotiation {
 
   Session& s_;
   const options& o_;
+  const sm_state* resume_;
   bool authenticated_ = false;
 };
 
 template <class Session>
-std::expected<Session, connect_error> establish(Session s, const options& how) {
-  negotiation<Session> steps(s, how);
+std::expected<Session, connect_error> establish(Session s, const options& how, const sm_state* resume = nullptr) {
+  negotiation<Session> steps(s, how, resume);
   if (auto done = steps.run(); !done)
     return std::unexpected(done.error());
   s.bound_to(std::move(steps.jid));
   s.versions_rosters(steps.roster_versioning);
   s.deliver_unhandled(how.deliver_unhandled);
+  s.describes_itself(how);
+  if (resume)
+    s.resumed_from(*resume, steps.resumed_h);
+  else if (steps.enabled)
+    s.stream_managed(*steps.enabled);
   return s;
 }
 
@@ -1968,6 +2507,16 @@ template <class P = standard, transport T, class Handlers = answering<>, class Y
 std::expected<session<T&, P, Handlers, Yield>, connect_error>
 try_connect(T& transport, const options& how, Handlers handlers = {}, Yield yield = {}) {
   return detail::establish(session<T&, P, Handlers, Yield>(transport, std::move(handlers), std::move(yield)), how);
+}
+
+// XEP-0198: a stream taken up again over a new transport, from what
+// session.sm() gave: authenticated, then resumed instead of bound, and what
+// the server had not acknowledged sent again.
+template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
+std::expected<session<T&, P, Handlers, Yield>, connect_error>
+try_resume(T& transport, const options& how, const sm_state& state, Handlers handlers = {}, Yield yield = {}) {
+  return detail::establish(session<T&, P, Handlers, Yield>(transport, std::move(handlers), std::move(yield)), how,
+                           &state);
 }
 
 // The same over a range of bytes (or of chunks), read as far as each step

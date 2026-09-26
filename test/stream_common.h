@@ -7,7 +7,7 @@ namespace {
 std::string b64(std::string_view text) { return tern::crypto::base64_encode(tern::crypto::to_bytes(text)); }
 
 const std::string header =
-    "<?xml version='1.0'?><stream:stream to='example.com' from='user@example.com' version='1.0' "
+    "<?xml version='1.0'?><stream:stream to='example.com' from='user@example.com' version='1.0' xml:lang='en' "
     "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>";
 
 std::string server_header(std::string_view id) {

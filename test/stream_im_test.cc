@@ -185,7 +185,8 @@ TEST(Stream, PresenceAndSubscriptions) {
   EXPECT_FALSE(session.deny("@example.com"));  // not an address: nothing sent
   session.close();
   EXPECT_EQ(written,
-            "<presence xmlns=\"jabber:client\"><show>chat</show></presence>"
+            "<presence xmlns=\"jabber:client\"><show>chat</show><c xmlns=\"http://jabber.org/protocol/caps\" "
+            "hash=\"sha-1\" node=\"https://github.com/j4niwzis/tern\" ver=\"+J9YpfimwBXMGvuf/xQmyA3I36g=\"/></presence>"
             "<presence xmlns=\"jabber:client\" to=\"romeo@example.net\" type=\"subscribe\"/>"
             "<presence xmlns=\"jabber:client\" to=\"nurse@example.com\" type=\"subscribed\"/>"
             "<presence xmlns=\"jabber:client\" type=\"unavailable\"/>"
@@ -244,4 +245,28 @@ TEST(Stream, DropUnknown) {
   const auto& chat = std::get<dropping::message::chat>(std::get<dropping::message_t>(*one));
   EXPECT_EQ(chat.body, "hi");
   EXPECT_TRUE(chat.payload.empty());
+}
+
+// RFC 6121, 2.3 to 2.5: a contact added with its name and groups, and one
+// taken out; the pushes that follow are the server's.
+TEST(Stream, RosterChanges) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") + bind_features + bind_result +
+      "<iq type='result' id='tern-1'/><iq type='result' id='tern-2'/></stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  written.clear();
+  session.update_contact({.jid = "nurse@example.com", .name = "Nurse", .group = {"Servants"}});
+  session.remove_contact("tybalt@example.org");
+  EXPECT_EQ(written,
+            "<iq xmlns=\"jabber:client\" id=\"tern-1\" type=\"set\"><query xmlns=\"jabber:iq:roster\">"
+            "<item jid=\"nurse@example.com\" name=\"Nurse\"><group>Servants</group></item></query></iq>"
+            "<iq xmlns=\"jabber:client\" id=\"tern-2\" type=\"set\"><query xmlns=\"jabber:iq:roster\">"
+            "<item jid=\"tybalt@example.org\" subscription=\"remove\"/></query></iq>");
 }

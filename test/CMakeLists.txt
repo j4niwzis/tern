@@ -35,9 +35,14 @@ add_executable(tern-sasl-test sasl_test.cc)
 target_link_libraries(tern-sasl-test PRIVATE tern ${tern_gtest})
 add_test(NAME sasl COMMAND tern-sasl-test)
 # Three files, one binary: each compiles in the memory of a small machine.
-add_executable(tern-stream-test stream_negotiation_test.cc stream_requests_test.cc stream_im_test.cc)
+add_executable(tern-stream-test stream_negotiation_test.cc stream_requests_test.cc stream_answers_test.cc
+  stream_im_test.cc
+  stream_xep_test.cc)
 target_link_libraries(tern-stream-test PRIVATE tern ${tern_gtest})
 add_test(NAME stream COMMAND tern-stream-test)
 add_executable(tern-jid-test jid_test.cc)
 target_link_libraries(tern-jid-test PRIVATE tern ${tern_gtest})
 add_test(NAME jid COMMAND tern-jid-test)
+add_executable(tern-srv-test srv_test.cc)
+target_link_libraries(tern-srv-test PRIVATE tern ${tern_gtest})
+add_test(NAME srv COMMAND tern-srv-test)

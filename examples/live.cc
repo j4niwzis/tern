@@ -5,10 +5,15 @@
 //   tern-live plain <host> <port> <domain> <user> <password> [<user2> <password2>]
 //   tern-live tls   <host> <port> <domain> <user> <password> [<user2> <password2>]
 //
+// With host "srv", where to connect comes from the domain's SRV records
+// (RFC 6120, 3.2.1), asked of the resolver /etc/resolv.conf names, over UDP.
+//
 // With a second account: both connect, the first subscribes to the second
 // where it has not yet, and sends it a message. With one: roster, version,
 // ping.
+#include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -142,6 +147,43 @@ fd_transport tls(const std::string& host, const std::string& port, const std::st
   return {.in = from_child[0], .out = to_child[1], .name = std::move(name), .tls_below = true};
 }
 
+// The domain's XMPP service, by its SRV records: the first to try, or the
+// domain itself where there are none.
+std::pair<std::string, std::string> locate(const std::string& domain) {
+  std::string nameserver = "127.0.0.53";
+  {
+    std::ifstream conf("/etc/resolv.conf");
+    std::string word;
+    while (conf >> word)
+      if (word == "nameserver" && conf >> nameserver)
+        break;
+  }
+  std::vector<tern::srv::target> found;
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to{};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(53);
+  if (fd >= 0 && ::inet_pton(AF_INET, nameserver.c_str(), &to.sin_addr) == 1) {
+    timeval wait{3, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+    const auto id = static_cast<std::uint16_t>(std::random_device{}());
+    const auto question = tern::srv::query(domain, id);
+    ::sendto(fd, question.data(), question.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
+    std::uint8_t answer[4096];
+    const auto n = ::recv(fd, answer, sizeof answer, 0);
+    if (n > 0)
+      if (auto targets = tern::srv::answers(std::span<const std::uint8_t>(answer, static_cast<std::size_t>(n)), id))
+        found = std::move(*targets);
+  }
+  if (fd >= 0)
+    ::close(fd);
+  std::mt19937 random(std::random_device{}());
+  const auto order = tern::srv::ordered(found, random);
+  const tern::srv::target first = order.empty() ? tern::srv::fallback(domain) : order.front();
+  std::println("SRV via {}: {} record(s); trying {}:{}", nameserver, found.size(), first.host, first.port);
+  return {first.host, std::to_string(first.port)};
+}
+
 std::string why(const tern::request_error& failed) {
   if (failed.reply)
     return std::string(failed.reply->condition());
@@ -181,7 +223,10 @@ int main(int argc, char** argv) {
                  argv[0]);
     return 2;
   }
-  const std::string mode = argv[1], host = argv[2], port = argv[3], domain = argv[4];
+  const std::string mode = argv[1], domain = argv[4];
+  std::string host = argv[2], port = argv[3];
+  if (host == "srv")
+    std::tie(host, port) = locate(domain);
   auto open = [&](std::string name) {
     return mode == "tls" ? tls(host, port, domain, std::move(name)) : tcp(host, port, std::move(name));
   };
