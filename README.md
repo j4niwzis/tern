@@ -163,3 +163,19 @@ and `request` throw; `try_connect`, `try_receive` and `try_request` hand a
 2.6), from its version where the server versions rosters; `cache.apply(push)`
 takes a push. Subscriptions: `subscribe`, `approve`, `deny`, `unsubscribe`,
 each to a bare JID; `available()` and `close()` send presence.
+
+## Constant evaluation
+
+The session is `constexpr` along its whole path -- negotiation, SASL, the
+typed reading, requests and their routing -- so the compiler can run it, and
+must refuse any undefined behaviour on the way. A `std::deque`, which cannot
+be used there, is a `std::vector` while the compiler evaluates and a deque
+when the program runs (a union, chosen with `if consteval`): nothing is
+slower for it. Threads (`thread_scheduler`) and transports that read
+sockets are the program's alone.
+
+`test/constexpr_test.cc` holds `CONSTEXPR_TEST`s, as alef's: each runs when
+the program runs, and -- with `-DTERN_CONSTEXPR_TESTS=ON`, as CI builds --
+while it is compiled as well, a whole session over a script among them. One
+that is not a constant expression fails when it runs, and compiles itself
+alone (`tern-constexpr-Suite.Name`) so that the compiler says why.

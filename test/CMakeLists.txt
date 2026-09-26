@@ -46,3 +46,35 @@ add_test(NAME jid COMMAND tern-jid-test)
 add_executable(tern-srv-test srv_test.cc)
 target_link_libraries(tern-srv-test PRIVATE tern ${tern_gtest})
 add_test(NAME srv COMMAND tern-srv-test)
+
+# Every CONSTEXPR_TEST run by the compiler as well, as a constant expression,
+# as alef's are. CI turns it on; off by default, because it is the slow half.
+option(TERN_CONSTEXPR_TESTS "Run every CONSTEXPR_TEST while it is compiled as well" OFF)
+get_property(tern_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+foreach(one IN ITEMS constexpr)
+  add_executable(tern-${one}-test ${one}_test.cc)
+  target_link_libraries(tern-${one}-test PRIVATE tern ${tern_gtest})
+  add_test(NAME ${one} COMMAND tern-${one}-test)
+  if(NOT TERN_CONSTEXPR_TESTS)
+    continue()
+  endif()
+  # A target for each test, compiling it alone with its body as a
+  # static_assert: what a test that is not a constant expression builds, to
+  # show what the compiler says of it.
+  target_compile_definitions(tern-${one}-test PRIVATE
+    TERN_CONSTEXPR_TESTS
+    "TERN_TEST_CMAKE=\"${CMAKE_COMMAND}\""
+    "TERN_TEST_BUILD_DIR=\"${CMAKE_BINARY_DIR}\""
+    $<${tern_multi_config}:TERN_TEST_CONFIG="$<CONFIG>">)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${one}_test.cc)
+  file(STRINGS ${one}_test.cc declared REGEX "^CONSTEXPR_TEST\\(")
+  foreach(line IN LISTS declared)
+    if(line MATCHES "^CONSTEXPR_TEST\\(([A-Za-z0-9_]+), *([A-Za-z0-9_]+)\\)")
+      set(test ${CMAKE_MATCH_1}.${CMAKE_MATCH_2})
+      add_library(tern-constexpr-${test} OBJECT EXCLUDE_FROM_ALL ${one}_test.cc)
+      target_link_libraries(tern-constexpr-${test} PRIVATE tern ${tern_gtest})
+      target_compile_definitions(tern-constexpr-${test} PRIVATE
+        TERN_CONSTEXPR_TESTS "TERN_CONSTEXPR_DIAGNOSE=\"${test}\"")
+    endif()
+  endforeach()
+endforeach()

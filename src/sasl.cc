@@ -21,6 +21,13 @@ struct failure {
   std::string detail;
 };
 
+// A number as decimal digits, in constant evaluation too.
+constexpr std::string decimal(std::uint32_t n) {
+  char digits[16];
+  char* end = std::to_chars(digits, digits + 16, n).ptr;
+  return std::string(digits, end);
+}
+
 // A fresh client nonce: 24 random bytes, in Base64.
 inline std::string random_nonce() {
   std::random_device source;
@@ -35,7 +42,7 @@ inline std::string random_nonce() {
 template <class Hash>
 class scram {
  public:
-  scram(std::string_view username, std::string_view password, std::string nonce,
+  constexpr scram(std::string_view username, std::string_view password, std::string nonce,
         std::uint32_t minimum_iterations = 1)
       : password_(password), nonce_(std::move(nonce)), minimum_(minimum_iterations) {
     // saslname: '=' and ',' escaped (RFC 5802, section 5.1).
@@ -52,21 +59,21 @@ class scram {
   // Channel binding (RFC 5802, 6; RFC 9266): the exchange bound to the TLS
   // channel under it -- its type, "tls-exporter" or "tls-server-end-point",
   // and the data the TLS layer gives for it. For a -PLUS mechanism.
-  void bind_channel(std::string_view type, crypto::bytes data) {
+  constexpr void bind_channel(std::string_view type, crypto::bytes data) {
     header_ = "p=" + std::string(type) + ",,";
     binding_ = std::move(data);
   }
 
   // That the client could bind the channel, but the server offered no -PLUS
   // mechanism: said, so that a downgrade shows (RFC 5802, 6).
-  void could_bind() { header_ = "y,,"; }
+  constexpr void could_bind() { header_ = "y,,"; }
 
   // The client-first-message: the channel binding flag, no authorization
   // identity.
-  std::string first() const { return header_ + first_bare(); }
+  constexpr std::string first() const { return header_ + first_bare(); }
 
   // The client-final-message, in answer to the server-first-message.
-  std::expected<std::string, failure> answer(std::string_view server_first) {
+  constexpr std::expected<std::string, failure> answer(std::string_view server_first) {
     const auto fields = parse(server_first);
     const auto nonce = field(fields, 'r');
     const auto salt64 = field(fields, 's');
@@ -81,7 +88,7 @@ class scram {
     if (!salt || problem != std::errc{} || end != count->data() + count->size() || iterations == 0)
       return std::unexpected(failure{failure_code::malformed, std::string(server_first)});
     if (iterations < minimum_)
-      return std::unexpected(failure{failure_code::too_few_iterations, std::to_string(iterations)});
+      return std::unexpected(failure{failure_code::too_few_iterations, decimal(iterations)});
 
     const crypto::bytes salted =
         crypto::pbkdf2<Hash>(crypto::to_bytes(password_), *salt, iterations, Hash::size);
@@ -101,7 +108,7 @@ class scram {
   }
 
   // Whether the server-final-message proves the server knows the password.
-  std::expected<void, failure> verify(std::string_view server_final) const {
+  constexpr std::expected<void, failure> verify(std::string_view server_final) const {
     const auto fields = parse(server_final);
     if (const auto error = field(fields, 'e'))
       return std::unexpected(failure{failure_code::server_error, std::string(*error)});
@@ -118,9 +125,9 @@ class scram {
   std::string header_ = "n,,";
   crypto::bytes binding_;
 
-  std::string first_bare() const { return "n=" + username_ + ",r=" + nonce_; }
+  constexpr std::string first_bare() const { return "n=" + username_ + ",r=" + nonce_; }
 
-  static std::vector<std::pair<char, std::string_view>> parse(std::string_view message) {
+  static constexpr std::vector<std::pair<char, std::string_view>> parse(std::string_view message) {
     std::vector<std::pair<char, std::string_view>> out;
     while (!message.empty()) {
       const std::size_t comma = message.find(',');
@@ -134,7 +141,7 @@ class scram {
     return out;
   }
 
-  static std::optional<std::string_view> field(const std::vector<std::pair<char, std::string_view>>& all, char name) {
+  static constexpr std::optional<std::string_view> field(const std::vector<std::pair<char, std::string_view>>& all, char name) {
     for (const auto& [key, value] : all)
       if (key == name)
         return value;
@@ -153,7 +160,7 @@ using scram_sha256 = scram<crypto::sha256>;
 
 // PLAIN (RFC 4616): an authorization identity, which may be empty, the
 // authentication identity and the password, each after a NUL.
-inline std::string plain(std::string_view authcid, std::string_view password, std::string_view authzid = {}) {
+constexpr std::string plain(std::string_view authcid, std::string_view password, std::string_view authzid = {}) {
   std::string out(authzid);
   out += '\0';
   out += authcid;

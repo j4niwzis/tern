@@ -17,7 +17,7 @@ struct target {
 
 // The query for the service's records at the domain (RFC 1035, 4.1): one
 // question, of type SRV, recursion desired.
-inline std::vector<std::uint8_t> query(std::string_view domain, std::uint16_t id,
+constexpr std::vector<std::uint8_t> query(std::string_view domain, std::uint16_t id,
                                        std::string_view service = "_xmpp-client._tcp") {
   std::vector<std::uint8_t> out{static_cast<std::uint8_t>(id >> 8), static_cast<std::uint8_t>(id & 0xff),
                                 0x01, 0x00,   // flags: RD
@@ -46,8 +46,8 @@ struct reader {
   std::span<const std::uint8_t> in;
   std::size_t at = 0;
 
-  bool has(std::size_t n) const { return at + n <= in.size(); }
-  std::uint16_t u16() {
+  constexpr bool has(std::size_t n) const { return at + n <= in.size(); }
+  constexpr std::uint16_t u16() {
     const std::uint16_t out = static_cast<std::uint16_t>(in[at] << 8 | in[at + 1]);
     at += 2;
     return out;
@@ -55,7 +55,7 @@ struct reader {
 
   // A name, following compression pointers (RFC 1035, 4.1.4) -- a bounded
   // number of them, so that a loop ends.
-  std::optional<std::string> name() {
+  constexpr std::optional<std::string> name() {
     std::string out;
     std::size_t here = at;
     bool jumped = false;
@@ -83,7 +83,8 @@ struct reader {
         return std::nullopt;
       if (!out.empty())
         out += '.';
-      out.append(reinterpret_cast<const char*>(in.data()) + here + 1, length);
+      for (std::size_t i = 0; i < length; ++i)
+        out.push_back(static_cast<char>(in[here + 1 + i]));
       here += 1 + length;
     }
     return std::nullopt;
@@ -94,7 +95,7 @@ struct reader {
 
 // The SRV records a response holds, for the query with that id; why not,
 // where it is not one.
-inline std::expected<std::vector<target>, std::string> answers(std::span<const std::uint8_t> response,
+constexpr std::expected<std::vector<target>, std::string> answers(std::span<const std::uint8_t> response,
                                                                 std::uint16_t id) {
   detail::reader r{response};
   if (!r.has(12))
@@ -112,7 +113,7 @@ inline std::expected<std::vector<target>, std::string> answers(std::span<const s
   if (rcode == 3)
     return std::vector<target>{};  // no such name
   if (rcode != 0)
-    return std::unexpected("server failure " + std::to_string(rcode));
+    return std::unexpected(std::string("server failure ") + static_cast<char>('0' + rcode % 10));
   for (std::uint16_t q = 0; q < questions; ++q) {
     if (!r.name() || !r.has(4))
       return std::unexpected("bad question");
@@ -187,6 +188,6 @@ std::vector<target> ordered(std::vector<target> targets, Random& random) {
 
 // Where there are no records at all (RFC 6120, 3.2.2): the domain itself,
 // at the port XMPP clients use.
-inline target fallback(std::string_view domain) { return {0, 0, 5222, std::string(domain)}; }
+constexpr target fallback(std::string_view domain) { return {0, 0, 5222, std::string(domain)}; }
 
 }  // namespace tern::srv
