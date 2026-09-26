@@ -35,9 +35,11 @@ session.send(tern::message::chat{.to = "romeo@example.net", .body = "hi"});
 - **Input read as far as needed**: up to the next `<` or `>` at a time, and
   never ahead, which is what makes the TLS upgrade and coroutines work.
 
-Built on [chevron](https://github.com/j4niwzis/chevron), the XML of streams.
-For now it is taken from a checkout: configure with
-`-DTERN_CHEVRON_DIR=<path to chevron>`.
+Built on [chevron](https://github.com/j4niwzis/chevron), the XML of streams, and
+[alef](https://github.com/j4niwzis/alef) for addresses (PRECIS, IDNA). Both
+come through cmake-everywhere, pinned to commits; both are private, so git has
+to be able to authenticate to fetch them. To build against local checkouts
+instead: `-DCPM_chevron_SOURCE=<path> -DCPM_alef_SOURCE=<path>`.
 
 ## Requests
 

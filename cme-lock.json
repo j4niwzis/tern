@@ -2,6 +2,10 @@
   "about": "Written by cmake-everywhere. Commit this file. Every value is a fact about something outside this project that has to stay true: the commit a library was fetched at, the digest of an archive, and the digest of a port file read from somewhere else. Configure with -DCME_LOCK_ALL=ON to write it again.",
   "lock": 1,
   "ports": {
+    "alef": {
+      "commit": "578d82d9c280e15c209e4cc71ddd227f47423bcb",
+      "url": "https://github.com/j4niwzis/alef.git"
+    },
     "boost": {
       "port": [
         "7928396427f138e4f808373896fd4ca77746aa51597ed297a0465fc06c75632e"
@@ -14,6 +18,10 @@
       ],
       "url": "https://github.com/boostorg/pfr.git",
       "version": "1.92.0"
+    },
+    "chevron": {
+      "commit": "1459adf29c75b09c75ca0bccca367d0dced61e0a",
+      "url": "https://github.com/j4niwzis/chevron.git"
     },
     "cmake-everywhere": {
       "version": "v0.2.5"

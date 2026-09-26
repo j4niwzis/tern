@@ -41,10 +41,10 @@ What the RFCs require only of servers is left out.
 
 | § | Requirement | Status | Test |
 | --- | --- | --- | --- |
-| 3.2 | Domainpart prepared as an IDNA2008 domain name | not yet (alef has IDNA) | — |
-| 3.3 | Localpart prepared with the UsernameCaseMapped profile of PRECIS | not yet (alef has PRECIS) | — |
-| 3.4 | Resourcepart prepared with the OpaqueString profile of PRECIS | not yet (alef has PRECIS) | — |
-| 3.x | Each part at most 1023 octets after preparation | not yet | — |
+| 3.2 | Domainpart prepared as an IDNA2008 domain name, a trailing dot dropped, IP literals kept | done: `tern::jid`, with alef | `Jid.ValidExamples`, `Jid.NotAddresses` |
+| 3.3 | Localpart prepared with the UsernameCaseMapped profile of PRECIS, and `" & ' / : < > @` refused | done | `Jid.ValidExamples`, `Jid.NotAddresses` |
+| 3.4 | Resourcepart prepared with the OpaqueString profile of PRECIS | done | `Jid.ValidExamples` |
+| 3.x | Each part at most 1023 octets after preparation | done | `Jid.NotAddresses` |
 
 ## RFC 6121: XMPP IM
 

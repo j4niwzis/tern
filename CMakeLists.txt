@@ -15,13 +15,28 @@ if(NOT COMMAND cme_find_package)
   include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
 endif()
 
-# chevron, for the XML of the stream. It is private and not fetched yet: a
-# checkout of it, where TERN_CHEVRON_DIR says.
-set(TERN_CHEVRON_DIR "" CACHE PATH "A checkout of chevron")
-if(NOT TERN_CHEVRON_DIR)
-  message(FATAL_ERROR "tern: set TERN_CHEVRON_DIR to a checkout of chevron")
-endif()
-add_subdirectory(${TERN_CHEVRON_DIR} ${CMAKE_BINARY_DIR}/_chevron EXCLUDE_FROM_ALL)
+# chevron, for the XML of the stream, and alef, for addresses (PRECIS and
+# IDNA, RFC 7622): cme ports, pinned to commits and fetched from GitHub. Both
+# are private, so git has to be able to authenticate -- a credential helper,
+# or a token in CI. A checkout is used instead with
+# -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
+cme_declare_port(NAME chevron PROVIDES chevron
+  GITHUB_REPOSITORY j4niwzis/chevron
+  GIT_TAG 1459adf29c75b09c75ca0bccca367d0dced61e0a
+  LICENSE LicenseRef-proprietary
+  SYSTEM NEVER
+  TARGETS chevron)
+cme_options(chevron "CHEVRON_TESTS OFF")
+cme_find_package(chevron REQUIRED)
+
+cme_declare_port(NAME alef PROVIDES alef
+  GITHUB_REPOSITORY j4niwzis/alef
+  GIT_TAG 578d82d9c280e15c209e4cc71ddd227f47423bcb
+  LICENSE LicenseRef-proprietary
+  SYSTEM NEVER
+  TARGETS alef_precis)
+cme_options(alef "ALEF_TESTS OFF")
+cme_find_package(alef REQUIRED)
 
 set(TERN_CONSTEXPR_STEPS 100000000 CACHE STRING
   "clang's -fconstexpr-steps for tern and what imports it")
@@ -44,12 +59,14 @@ endfunction()
 
 tern_module(tern_crypto src/crypto.cc)
 tern_module(tern_sasl src/sasl.cc tern_crypto)
-tern_module(tern_stream src/stream.cc tern_crypto tern_sasl chevron)
-tern_module(tern src/tern.cc tern_crypto tern_sasl tern_stream)
+tern_module(tern_stream src/stream.cc tern_crypto tern_sasl chevron Boost::pfr)
+tern_module(tern_jid src/jid.cc alef_utf alef_precis alef_idna)
+tern_module(tern src/tern.cc tern_crypto tern_sasl tern_stream tern_jid)
 
 add_library(tern::crypto ALIAS tern_crypto)
 add_library(tern::sasl ALIAS tern_sasl)
 add_library(tern::stream ALIAS tern_stream)
+add_library(tern::jid ALIAS tern_jid)
 add_library(tern::tern ALIAS tern)
 
 if(TERN_TESTS)
