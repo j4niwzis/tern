@@ -374,3 +374,55 @@ TEST(Stream, EveryRequestIsAnswered) {
       << written;
   EXPECT_NE(written.find("to=\"romeo@example.net/orchard\""), std::string::npos) << written;
 }
+
+// RFC 6120, 4.9: a stream error after binding ends the stanzas with its
+// condition. 4.4: after closing from this side, what the server sends before
+// its own closing tag still arrives.
+TEST(Stream, StreamErrorAndClosing) {
+  const auto connected = [](const std::string& after, std::string& written) {
+    return server_header("s1") +
+           "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+           "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+           "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+           bind_features + bind_result + after;
+  };
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  {
+    std::string written;
+    const std::string server = connected(
+        "<message from='romeo@example.net' type='chat'><body>first</body></message>"
+        "<stream:error><conflict xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>"
+        "<text xmlns='urn:ietf:params:xml:ns:xmpp-streams'>Replaced by new connection</text></stream:error>"
+        "</stream:stream>",
+        written);
+    std::string_view input = server;
+    auto session = tern::connect(input, std::back_inserter(written), how);
+    std::vector<bool> fine;
+    std::optional<tern::connect_error> ended;
+    for (auto&& one : session.stanzas()) {
+      fine.push_back(one.has_value());
+      if (!one) ended = one.error();
+    }
+    EXPECT_EQ(fine, (std::vector<bool>{true, false}));
+    ASSERT_TRUE(ended);
+    EXPECT_EQ(ended->code, tern::connect_code::stream_error);
+    EXPECT_EQ(ended->detail, "conflict");
+  }
+  {
+    std::string written;
+    const std::string server = connected(
+        "<message from='romeo@example.net' type='chat'><body>late</body></message></stream:stream>", written);
+    std::string_view input = server;
+    auto session = tern::connect(input, std::back_inserter(written), how);
+    written.clear();
+    session.close();
+    std::size_t late = 0;
+    for (auto&& one : session.stanzas()) {
+      ASSERT_TRUE(one.has_value());
+      ++late;
+    }
+    EXPECT_EQ(late, 1u);  // arrived after this side closed, and still read
+    EXPECT_EQ(written, "</stream:stream>");
+  }
+}

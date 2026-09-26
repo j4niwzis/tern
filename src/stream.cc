@@ -206,6 +206,24 @@ constexpr auto xml_schema(chevron::type<result>) { return stanza_schema<result>(
 constexpr auto xml_schema(chevron::type<error>) { return stanza_schema<error>("iq").when<"type">("error"); }
 }  // namespace iq
 
+// A stream error (RFC 6120, 4.9): the server ends the stream, and says why.
+struct stream_error {
+  std::vector<chevron::any> details;
+
+  // The condition: an element of the stream-errors namespace, by its name.
+  std::string_view condition() const {
+    for (const chevron::any& one : details)
+      if (one.uri == "urn:ietf:params:xml:ns:xmpp-streams" && one.local != "text")
+        return one.local;
+    return {};
+  }
+};
+
+constexpr auto xml_schema(chevron::type<stream_error>) {
+  using namespace chevron::members;
+  return chevron::schema<stream_error>().name(stream_namespace, "error").members(unknown_children());
+}
+
 using message_t = std::variant<message::normal, message::chat, message::groupchat, message::headline, message::error>;
 using presence_t = std::variant<presence::available, presence::unavailable, presence::subscribe,
                                 presence::subscribed, presence::unsubscribe, presence::unsubscribed, presence::probe,
@@ -676,12 +694,20 @@ class session {
     auto one = chevron::read_one_of<message::normal, message::chat, message::groupchat, message::headline,
                                     message::error, presence::available, presence::unavailable, presence::subscribe,
                                     presence::subscribed, presence::unsubscribe, presence::unsubscribed,
-                                    presence::probe, presence::error, iq::get, iq::set, iq::result, iq::error>(source_);
+                                    presence::probe, presence::error, iq::get, iq::set, iq::result, iq::error,
+                                    stream_error>(source_);
+    // A stream error ends the stream: its condition is the failure.
+    if (one) {
+      if (const auto* ended = std::get_if<stream_error>(&*one))
+        return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt});
+    }
     if (one)
       return std::visit(
           [](auto&& value) {
             using type = std::remove_cvref_t<decltype(value)>;
-            if constexpr (requires { message_t(std::move(value)); } && !requires { presence_t(std::move(value)); })
+            if constexpr (std::same_as<type, stream_error>)
+              return std::optional<stanza_t>();
+            else if constexpr (requires { message_t(std::move(value)); } && !requires { presence_t(std::move(value)); })
               return std::optional<stanza_t>(stanza_t(message_t(std::move(value))));
             else if constexpr (requires { presence_t(std::move(value)); } && !requires { iq_t(std::move(value)); })
               return std::optional<stanza_t>(stanza_t(presence_t(std::move(value))));
@@ -714,6 +740,9 @@ class session {
   }
 
   // Ends the stream.
+  // Ends the stream from this side (RFC 6120, 4.4). What the server sends
+  // before its own closing tag still arrives: go on reading stanzas() until
+  // it ends, and only then close the connection.
   void close() {
     out_ = std::ranges::copy(std::string_view("</stream:stream>"), std::move(out_)).out;
   }

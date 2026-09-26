@@ -11,9 +11,9 @@ What the RFCs require only of servers is left out.
 | --- | --- | --- | --- |
 | 4.2 | The initiating entity opens the stream with `to` (the server's domain) and `version='1.0'` | done | `Stream.ScramBindAndStanzas` |
 | 4.3.2 | The stream is restarted, with a new header, after TLS and after SASL success | done | `Stream.StartTlsThenPlain`, `Stream.ScramBindAndStanzas` |
-| 4.4 | Closing: `</stream:stream>` sent, and the peer's closing tag waited for before the connection is closed | partial: `close()` sends it; waiting for the peer's is the caller's | — |
+| 4.4 | Closing: `</stream:stream>` sent, and the peer's closing tag waited for before the connection is closed | done: `close()` sends it, and `stanzas()` goes on until the peer's; the connection is the caller's to close after that | `Stream.StreamErrorAndClosing` |
 | 4.6 | Whitespace keepalives are accepted between stanzas | partial: white space between stanzas is skipped by the reader, untested | — |
-| 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | partial: a stream error ends negotiation with its detail; after binding it is a read error without the condition | `Stream.WhatStopsIt` |
+| 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | done after binding (`connect_code::stream_error`, the condition as detail); partial during negotiation, where the condition is not given | `Stream.StreamErrorAndClosing` |
 | 4.9.3.19 | `see-other-host`: reconnect to the host given | not yet | — |
 | 5.3.1 | STARTTLS used where offered; a server that requires it and a client that cannot is an error | done | `Stream.StartTlsThenPlain`, `Stream.WhatStopsIt` |
 | 5.4.3.3 | After `<proceed/>`, nothing is read or written before TLS is in place | done: the hook runs before anything past `<proceed/>` is read | `Stream.StartTlsThenPlain` |
