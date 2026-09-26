@@ -358,6 +358,12 @@ struct connect_error {
   std::optional<sasl::failure> sasl;
 };
 
+// What the TLS layer gives for channel binding: the type and its data.
+struct channel_binding {
+  std::string type;  // "tls-exporter", "tls-server-end-point"
+  crypto::bytes data;
+};
+
 struct options {
   std::string username;  // the localpart, prepared
   std::string domain;
@@ -375,6 +381,11 @@ struct options {
   // suspend here and let the others run -- a coroutine's yield, or a wait on
   // a condition with threads. Without it, only one request may be in flight.
   std::function<void()> yield;
+  // The TLS channel's binding data, where the TLS layer can give it (RFC 9266,
+  // tls-exporter; or tls-server-end-point): with it SCRAM-SHA-256-PLUS or
+  // SCRAM-SHA-1-PLUS is used where offered, and the absence of an offer is
+  // said to the server.
+  std::function<std::optional<channel_binding>()> channel_binding;
   // A get or a set nobody handles is answered with service-unavailable, as
   // RFC 6120, 8.2.3 requires a reply; with this, it is handed out by
   // receive() and stanzas() instead, and answering it is the caller's.
@@ -1040,10 +1051,16 @@ class negotiation {
   std::expected<void, connect_error> authenticate(const std::vector<std::string>& offered, bool secured) {
     const auto has = [&](std::string_view name) { return std::ranges::find(offered, name) != offered.end(); };
     const std::string nonce = o_.nonce.empty() ? sasl::random_nonce() : o_.nonce;
+    const std::optional<channel_binding> binding =
+        o_.channel_binding && secured ? o_.channel_binding() : std::nullopt;
+    if (binding && has("SCRAM-SHA-256-PLUS"))
+      return scram<sasl::scram_sha256>("SCRAM-SHA-256-PLUS", nonce, &*binding, true);
+    if (binding && has("SCRAM-SHA-1-PLUS"))
+      return scram<sasl::scram_sha1>("SCRAM-SHA-1-PLUS", nonce, &*binding, true);
     if (has("SCRAM-SHA-256"))
-      return scram<sasl::scram_sha256>("SCRAM-SHA-256", nonce);
+      return scram<sasl::scram_sha256>("SCRAM-SHA-256", nonce, binding ? &*binding : nullptr, false);
     if (has("SCRAM-SHA-1"))
-      return scram<sasl::scram_sha1>("SCRAM-SHA-1", nonce);
+      return scram<sasl::scram_sha1>("SCRAM-SHA-1", nonce, binding ? &*binding : nullptr, false);
     if (has("PLAIN") && (secured || o_.plain_without_tls)) {
       auth("PLAIN", sasl::plain(o_.username, o_.password));
       auto answer = read_nonza();
@@ -1067,8 +1084,13 @@ class negotiation {
   }
 
   template <class Scram>
-  std::expected<void, connect_error> scram(std::string_view mechanism, const std::string& nonce) {
+  std::expected<void, connect_error> scram(std::string_view mechanism, const std::string& nonce,
+                                           const channel_binding* binding, bool plus) {
     Scram client(o_.username, o_.password, nonce, o_.minimum_iterations);
+    if (binding && plus)
+      client.bind_channel(binding->type, binding->data);
+    else if (binding)
+      client.could_bind();
     auth(mechanism, client.first());
     auto challenge = read_nonza();
     if (!challenge)

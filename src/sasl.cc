@@ -49,8 +49,21 @@ class scram {
     }
   }
 
-  // The client-first-message: no channel binding, no authorization identity.
-  std::string first() const { return std::string(header) + first_bare(); }
+  // Channel binding (RFC 5802, 6; RFC 9266): the exchange bound to the TLS
+  // channel under it -- its type, "tls-exporter" or "tls-server-end-point",
+  // and the data the TLS layer gives for it. For a -PLUS mechanism.
+  void bind_channel(std::string_view type, crypto::bytes data) {
+    header_ = "p=" + std::string(type) + ",,";
+    binding_ = std::move(data);
+  }
+
+  // That the client could bind the channel, but the server offered no -PLUS
+  // mechanism: said, so that a downgrade shows (RFC 5802, 6).
+  void could_bind() { header_ = "y,,"; }
+
+  // The client-first-message: the channel binding flag, no authorization
+  // identity.
+  std::string first() const { return header_ + first_bare(); }
 
   // The client-final-message, in answer to the server-first-message.
   std::expected<std::string, failure> answer(std::string_view server_first) {
@@ -74,7 +87,9 @@ class scram {
         crypto::pbkdf2<Hash>(crypto::to_bytes(password_), *salt, iterations, Hash::size);
     const crypto::bytes client_key = crypto::hmac<Hash>(salted, crypto::to_bytes("Client Key"));
     const crypto::bytes stored_key = Hash::digest(client_key);
-    const std::string without_proof = "c=" + crypto::base64_encode(crypto::to_bytes(header)) + ",r=" + std::string(*nonce);
+    crypto::bytes bound = crypto::to_bytes(header_);
+    bound.insert(bound.end(), binding_.begin(), binding_.end());
+    const std::string without_proof = "c=" + crypto::base64_encode(bound) + ",r=" + std::string(*nonce);
     const std::string auth_message = first_bare() + "," + std::string(server_first) + "," + without_proof;
     const crypto::bytes client_signature = crypto::hmac<Hash>(stored_key, crypto::to_bytes(auth_message));
     crypto::bytes proof = client_key;
@@ -100,7 +115,8 @@ class scram {
   }
 
  private:
-  static constexpr std::string_view header = "n,,";
+  std::string header_ = "n,,";
+  crypto::bytes binding_;
 
   std::string first_bare() const { return "n=" + username_ + ",r=" + nonce_; }
 

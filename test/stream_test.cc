@@ -536,3 +536,38 @@ TEST(Stream, FailureConditionAndKeepalives) {
     EXPECT_EQ(messages, 2u);
   }
 }
+
+// RFC 5802, 6 and RFC 9266: over TLS, with the TLS layer's binding data, a
+// -PLUS mechanism where offered, the binding in the GS2 header and in c=;
+// where none is offered, y,, says so.
+TEST(Stream, ChannelBinding) {
+  const auto written_for = [](const std::string& mechanisms) {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls></stream:features>"
+        "<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>" + server_header("s2") +
+        "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>" + mechanisms +
+        "</mechanisms></stream:features><challenge xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>" +
+        b64("r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096") +
+        "</challenge><failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><not-authorized/></failure>";
+    std::string_view input = server;
+    tern::options how = rfc7677();
+    how.start_tls = [] {};
+    how.channel_binding = [] {
+      return std::optional<tern::channel_binding>(tern::channel_binding{"tls-exporter", {1, 2, 3}});
+    };
+    std::string written;
+    (void)tern::try_connect(input, std::back_inserter(written), how);
+    return written;
+  };
+  const std::string plus =
+      written_for("<mechanism>SCRAM-SHA-256</mechanism><mechanism>SCRAM-SHA-256-PLUS</mechanism>");
+  EXPECT_NE(plus.find("mechanism='SCRAM-SHA-256-PLUS'>" + b64("p=tls-exporter,,n=user,r=rOprNGfwEbeRWgbNEkqO")),
+            std::string::npos) << plus;
+  EXPECT_NE(plus.find(b64("c=" + b64(std::string("p=tls-exporter,,\x01\x02\x03", 19)) +
+                          ",r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=").substr(0, 40)),
+            std::string::npos) << plus;
+  const std::string downgraded = written_for("<mechanism>SCRAM-SHA-256</mechanism>");
+  EXPECT_NE(downgraded.find("mechanism='SCRAM-SHA-256'>" + b64("y,,n=user,r=rOprNGfwEbeRWgbNEkqO")),
+            std::string::npos) << downgraded;
+}

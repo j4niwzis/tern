@@ -21,7 +21,7 @@ What the RFCs require only of servers is left out.
 | 6.3.3 | Mechanisms chosen by the client's preference among those offered | done: SCRAM-SHA-256, then SCRAM-SHA-1, then PLAIN | `Stream.ScramBindAndStanzas` |
 | 6.3.10 | PLAIN not used without TLS unless explicitly allowed | done | `Stream.WhatStopsIt` |
 | 6.4.2 | SCRAM as RFC 5802/7677: nonce, salted password, proofs, the server's signature verified | done | `Sasl.*`, `Stream.ScramBindAndStanzas` |
-| 6.4.3 | Channel binding (the -PLUS mechanisms) | not yet | — |
+| 6.4.3 | Channel binding (the -PLUS mechanisms) | done: SCRAM-SHA-256-PLUS and SCRAM-SHA-1-PLUS with the data the TLS layer gives (`options::channel_binding`), `y,,` where none is offered | `Stream.ChannelBinding` |
 | 6.4.5 | SASL `<failure/>`: its condition reported | done: `connect_code::not_authorized`, the condition as detail | `Stream.FailureConditionAndKeepalives` |
 | 6.4.1 | `<abort/>` to give up an exchange | not yet | — |
 | 7.4 | Resource binding requested, with or without a resource | done | `Stream.ScramBindAndStanzas` |
