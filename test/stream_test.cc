@@ -426,3 +426,46 @@ TEST(Stream, StreamErrorAndClosing) {
     EXPECT_EQ(written, "</stream:stream>");
   }
 }
+
+// RFC 6121, 2: the roster asked for, and pushes -- answered where they come
+// from the account, ignored where they come from anyone else.
+TEST(Stream, RosterAndPushes) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result +
+      "<iq type='result' id='tern-1'><query xmlns='jabber:iq:roster' ver='ver7'>"
+      "<item jid='nurse@example.com' name='Nurse' subscription='both'><group>Servants</group></item>"
+      "<item jid='romeo@example.net' subscription='none' ask='subscribe'/></query></iq>"
+      "<iq type='set' id='push1'><query xmlns='jabber:iq:roster' ver='ver8'>"
+      "<item jid='tybalt@example.org' subscription='remove'/></query></iq>"
+      "<iq type='set' id='push2' from='mallory@evil.example'><query xmlns='jabber:iq:roster'>"
+      "<item jid='mallory@evil.example' subscription='both'/></query></iq>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  written.clear();
+  const tern::roster contacts = session.request<tern::query::roster>();
+  EXPECT_EQ(contacts.ver, "ver7");
+  ASSERT_EQ(contacts.items.size(), 2u);
+  EXPECT_EQ(contacts.items[0].name, "Nurse");
+  EXPECT_TRUE(std::holds_alternative<tern::subscription::both>(*contacts.items[0].subscription));
+  EXPECT_EQ(contacts.items[0].group, (std::vector<std::string>{"Servants"}));
+  EXPECT_TRUE(contacts.items[1].ask.has_value());
+  EXPECT_NE(written.find("<query xmlns=\"jabber:iq:roster\"/>"), std::string::npos) << written;
+
+  written.clear();
+  std::size_t delivered = 0;
+  for (auto&& one : session.stanzas()) {
+    ASSERT_TRUE(one.has_value());
+    ++delivered;
+  }
+  EXPECT_EQ(delivered, 1u);  // the push from the account; the other is ignored
+  EXPECT_NE(written.find("id=\"push1\" type=\"result\""), std::string::npos) << written;
+  EXPECT_EQ(written.find("push2"), std::string::npos) << written;
+}

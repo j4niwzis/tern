@@ -224,6 +224,60 @@ constexpr auto xml_schema(chevron::type<stream_error>) {
   return chevron::schema<stream_error>().name(stream_namespace, "error").members(unknown_children());
 }
 
+// The roster (RFC 6121, 2): the contacts, as the server keeps them.
+inline constexpr std::string_view roster_namespace = "jabber:iq:roster";
+
+namespace subscription {
+struct none { static constexpr std::string_view xml_value = "none"; };
+struct to { static constexpr std::string_view xml_value = "to"; };
+struct from { static constexpr std::string_view xml_value = "from"; };
+struct both { static constexpr std::string_view xml_value = "both"; };
+struct remove { static constexpr std::string_view xml_value = "remove"; };
+}  // namespace subscription
+
+struct subscribe_pending { static constexpr std::string_view xml_value = "subscribe"; };
+
+struct roster_item {
+  std::string jid;
+  std::optional<std::string> name;
+  std::optional<std::variant<tern::subscription::none, tern::subscription::to, tern::subscription::from,
+                             tern::subscription::both, tern::subscription::remove>> subscription;
+  std::optional<std::variant<subscribe_pending>> ask;
+  std::vector<std::string> group;
+};
+
+constexpr auto xml_schema(chevron::type<roster_item>) {
+  using namespace chevron::members;
+  return chevron::schema<roster_item>()
+      .name(roster_namespace, "item")
+      .members(attribute(), attribute(), attribute(), attribute(), child_text());
+}
+
+struct roster {
+  std::optional<std::string> ver;
+  std::vector<roster_item> items;
+};
+
+constexpr auto xml_schema(chevron::type<roster>) {
+  using namespace chevron::members;
+  return chevron::schema<roster>().name(roster_namespace, "query").members(attribute(), child("item"));
+}
+
+namespace query {
+// The roster asked for (RFC 6121, 2.1.3), from the version given where there
+// is one (2.6).
+struct roster {
+  using kind = iq::get;
+  using answer = tern::roster;
+  std::optional<std::string> ver;
+};
+
+constexpr auto xml_schema(chevron::type<roster>) {
+  using namespace chevron::members;
+  return chevron::schema<roster>().name(roster_namespace, "query").members(attribute());
+}
+}  // namespace query
+
 using message_t = std::variant<message::normal, message::chat, message::groupchat, message::headline, message::error>;
 using presence_t = std::variant<presence::available, presence::unavailable, presence::subscribe,
                                 presence::subscribed, presence::unsubscribe, presence::unsubscribed, presence::probe,
@@ -426,7 +480,7 @@ struct request_failure : std::runtime_error {
 // answer is read into.
 //   struct version_query { using kind = tern::iq::get; using answer = server_version; };
 template <class Q>
-concept query = chevron::described<Q> && chevron::described<typename Q::answer> &&
+concept is_query = chevron::described<Q> && chevron::described<typename Q::answer> &&
                 (std::same_as<typename Q::kind, iq::get> || std::same_as<typename Q::kind, iq::set>);
 
 // A typed request: whom to ask, and the query itself.
@@ -570,7 +624,7 @@ class session {
   // comes back -- using kind = tern::iq::get; using answer = the type -- asked
   // of whom the request says:
   //   session.request<version_query>({.to = "romeo@example.net/orchard"})
-  template <query Query>
+  template <is_query Query>
   std::expected<typename Query::answer, request_error> try_request(asking<Query> question = {}) {
     typename Query::kind sent{.to = std::move(question.to), .lang = std::move(question.lang),
                               .payload = {chevron::to_any(question.query)}};
@@ -599,7 +653,7 @@ class session {
     return std::move(*answer);
   }
 
-  template <query Query>
+  template <is_query Query>
   typename Query::answer request(asking<Query> question = {}) {
     auto answer = try_request<Query>(std::move(question));
     if (!answer)
@@ -646,6 +700,28 @@ class session {
         [&](auto& question) {
           using type = std::remove_cvref_t<decltype(question)>;
           if constexpr (std::same_as<type, iq::get> || std::same_as<type, iq::set>) {
+            if constexpr (std::same_as<type, iq::set>) {
+              if (!question.payload.empty() && question.payload.front().uri == roster_namespace &&
+                  question.payload.front().local == "query") {
+                // RFC 6121, 2.1.6: a push is from the account itself -- no
+                // from, or the bare JID -- or it is ignored, not answered.
+                const std::string bare = jid_.substr(0, jid_.find('/'));
+                if (question.from && *question.from != bare)
+                  return true;
+                const auto found = handlers_.find({std::string(roster_namespace), "query"});
+                if (found != handlers_.end()) {
+                  try {
+                    answer(question, found->second(question.payload.front()));
+                  } catch (const refusal& refused) {
+                    refuse(question, refused.condition);
+                  }
+                  return true;
+                }
+                // Nobody handles it: answered all the same, and handed out.
+                answer(question);
+                return false;
+              }
+            }
             if (!question.payload.empty()) {
               const auto found = handlers_.find({question.payload.front().uri, question.payload.front().local});
               if (found != handlers_.end()) {
