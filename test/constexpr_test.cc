@@ -80,3 +80,68 @@ CONSTEXPR_TEST(Constexpr, Session) {
   CONSTEXPR_EXPECT_TRUE(written.find("<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>") !=
                         std::string::npos);
 }
+
+// Inboxes: each open one sees every stanza that arrives while it is open,
+// and taking one out of one leaves it in the others; one given an address
+// lets in only what comes from that bare JID.
+CONSTEXPR_TEST(Constexpr, Inboxes) {
+  const std::string server =
+      std::string("<?xml version='1.0'?><stream:stream xmlns='jabber:client' "
+                  "xmlns:stream='http://etherx.jabber.org/streams' id='s1' from='example.com' version='1.0'>") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism>"
+      "</mechanisms></stream:features><success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>"
+      "<?xml version='1.0'?><stream:stream xmlns='jabber:client' "
+      "xmlns:stream='http://etherx.jabber.org/streams' id='s2' from='example.com' version='1.0'>"
+      "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>"
+      "<iq type='result' id='bind_1'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>"
+      "<jid>user@example.com/tern</jid></bind></iq>"
+      "<message from='romeo@example.net/orchard' type='chat'><body>r1</body></message>"
+      "<message from='juliet@example.com/balcony' type='chat'><body>j1</body></message>"
+      "<message from='romeo@example.net/garden' type='chat'><body>r2</body></message>"
+      "<message from='nurse@example.com' type='chat'><body>n1</body></message>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  tern::options how{.username = "user", .domain = "example.com", .password = "pencil", .resource = "tern",
+                    .plain_without_tls = true};
+  auto session = tern::try_connect(input, std::back_inserter(written), how);
+  CONSTEXPR_EXPECT_TRUE(session.has_value());
+  if (!session)
+    return;
+  const auto body = [](const auto& got) -> std::string {
+    if (!got)
+      return "(error)";
+    if (!*got)
+      return "(the end)";
+    const auto* message = std::get_if<tern::message_t>(*got);
+    if (!message)
+      return "(not a message)";
+    return std::get<tern::message::chat>(*message).body.value_or("");
+  };
+  auto everyone = session->open_inbox();
+  auto romeo = session->open_inbox("romeo@example.net");
+  // Romeo's inbox reads past Juliet's message; everyone's still has it.
+  CONSTEXPR_EXPECT_EQ(body(romeo.try_next()), "r1");
+  CONSTEXPR_EXPECT_EQ(body(everyone.try_next()), "r1");
+  CONSTEXPR_EXPECT_EQ(body(everyone.try_next()), "j1");
+  CONSTEXPR_EXPECT_EQ(body(romeo.try_next()), "r2");
+  {
+    // Opened now: only what arrives from now on.
+    auto nurse = session->open_inbox();
+    // A filter of one's own: what is not taken is passed over, for it alone.
+    const auto from_the_nurse = [](const tern::stanza_t& one) {
+      const auto* message = std::get_if<tern::message_t>(&one);
+      return message && std::get<tern::message::chat>(*message).from.value_or("").starts_with("nurse@");
+    };
+    CONSTEXPR_EXPECT_EQ(body(nurse.try_next(from_the_nurse)), "n1");
+    CONSTEXPR_EXPECT_EQ(body(nurse.try_next()), "(the end)");
+  }
+  CONSTEXPR_EXPECT_EQ(body(everyone.try_next()), "r2");
+  CONSTEXPR_EXPECT_EQ(body(everyone.try_next()), "n1");
+  CONSTEXPR_EXPECT_EQ(body(romeo.try_next()), "(the end)");
+  CONSTEXPR_EXPECT_EQ(body(everyone.try_next()), "(the end)");
+  // Nobody called receive() while inboxes were open: nothing was kept for it.
+  const auto end = session->try_receive();
+  CONSTEXPR_EXPECT_TRUE(end.has_value() && !end->has_value());
+}
+

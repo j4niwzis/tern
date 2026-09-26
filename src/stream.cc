@@ -1380,6 +1380,11 @@ constexpr std::string decimal(N n) {
   return std::string(digits, end);
 }
 
+// What an inbox takes when it is not told what to take: everything.
+struct everything {
+  constexpr bool operator()(const auto&) const noexcept { return true; }
+};
+
 // A queue: std::deque at run time; a std::vector while the compiler
 // evaluates, where deque cannot be used. Which is chosen when it is made,
 // so the program runs on the deque as before.
@@ -1411,7 +1416,9 @@ class queue {
   }
 
   constexpr bool empty() const { return in_vector_ ? vector_.empty() : deque_.empty(); }
+  constexpr std::size_t size() const { return in_vector_ ? vector_.size() : deque_.size(); }
   constexpr T& front() { return in_vector_ ? vector_.front() : deque_.front(); }
+  constexpr T& at(std::size_t i) { return in_vector_ ? vector_[i] : deque_[i]; }
   constexpr void pop_front() {
     if (in_vector_)
       vector_.erase(vector_.begin());
@@ -1727,6 +1734,8 @@ class session {
     if (!query.queryid)
       query.queryid = "tern-mam-" + detail::decimal(++last_id_);
     const std::string queryid = *query.queryid;
+    ++archiving_;
+    detail::on_exit archived{[this] { --archiving_; }};
     auto fin = try_request<mam::query>({.to = std::move(to), .query = std::move(query)});
     if (!fin)
       return std::unexpected(std::move(fin).error());
@@ -1765,6 +1774,9 @@ class session {
     [[maybe_unused]] auto held = hold();
     if constexpr (concurrent)
       reader_ = scheduler_.current();
+    receiving_ = true;
+    // Whoever waits next reads, once this one is done.
+    detail::on_exit over{[this] { hand_over(); }};
     for (;;) {
       if (!pending_.empty())
         return take_pending();
@@ -1773,8 +1785,17 @@ class session {
           return std::optional<stanza_t>();
         return std::unexpected(*failed_);
       }
-      if (reading_)
-        return std::unexpected(connect_error{connect_code::xml, "read while another reads", std::nullopt});
+      if (reading_) {
+        if constexpr (concurrent) {
+          // An inbox's coroutine reads: woken when it hands out.
+          receiver_waiting_ = scheduler_.current();
+          detail::on_exit forget{[this] { receiver_waiting_.reset(); }};
+          scheduler_.park();
+          continue;
+        } else {
+          return std::unexpected(connect_error{connect_code::xml, "read while another reads", std::nullopt});
+        }
+      }
       read_and_route();
     }
   }
@@ -1887,6 +1908,20 @@ class session {
   // std::expected<stanza_t, connect_error>. The view ends where the server ends
   // the stream, or just after an error.
   constexpr stanza_view stanzas() { return stanza_view(*this); }
+
+  class inbox;
+
+  // An inbox of one's own: every stanza that arrives while it is open, the
+  // ones receive() would hand out -- messages, presences, requests nobody
+  // handles -- in order, and taken out of it alone. Each coroutine that waits
+  // for something opens one, and what one takes the others still have:
+  //   auto from_romeo = session.open_inbox("romeo@example.net");
+  //   const tern::stanza_t* one = from_romeo.next();   // parks till one comes
+  // Given an address, only what comes from that bare JID is let in -- and
+  // only that wakes a coroutine parked on it; next() may be told more
+  // (next(is_chat), a lambda). A stanza that could not be read goes to
+  // receive() only.
+  constexpr inbox open_inbox(std::optional<std::string> from = {}) { return inbox(*this, std::move(from)); }
 
   // A stanza, written to the transport, and flushed.
   // With stream management, it is kept until the server acknowledges it.
@@ -2152,8 +2187,89 @@ class session {
         pending_.push_back(std::unexpected(one.error()));
     } else if (*one) {
       if (!claimed(**one) && !dispatched(**one))
-        pending_.push_back(std::move(**one));
+        hand_out(std::move(**one));
     }
+  }
+
+  // A stanza for whoever takes stanzas: receive(), where anyone receives, or
+  // nobody has opened an inbox -- or an archive query waits for it -- and
+  // each inbox open. Copied only where both want it.
+  constexpr void hand_out(stanza_t one) {
+    const bool to_receive = inboxes_.empty() || receiving_ || archiving_ > 0;
+    if (!inboxes_.empty()) {
+      logged entry{.seq = next_seq_++, .from = {}, .stanza = nullptr};
+      if (const auto from = from_of(one))
+        entry.from = bare_of(*from);
+      entry.stanza = to_receive ? std::make_unique<stanza_t>(one) : std::make_unique<stanza_t>(std::move(one));
+      const std::string& from = entry.from;
+      log_.push_back(std::move(entry));
+      wake_inboxes(from);
+    }
+    if (to_receive) {
+      pending_.push_back(std::move(one));
+      if constexpr (concurrent)
+        if (receiver_waiting_)
+          scheduler_.wake(*std::exchange(receiver_waiting_, std::nullopt));
+    }
+  }
+
+  // Whom a stanza is from, as it says.
+  static constexpr std::optional<std::string_view> from_of(const stanza_t& one) {
+    return std::visit(
+        [](const auto& kind) {
+          return std::visit(
+              [](const auto& stanza) -> std::optional<std::string_view> {
+                if constexpr (requires { stanza.from; })
+                  if (stanza.from)
+                    return std::string_view(*stanza.from);
+                return std::nullopt;
+              },
+              kind);
+        },
+        one);
+  }
+
+  // An address's bare JID, prepared as RFC 7622 says, so that two ways of
+  // writing one address are one; while the compiler evaluates, where the
+  // preparation cannot run, as it is written.
+  static constexpr std::string bare_of(std::string_view address) {
+    if !consteval {
+      if (auto parsed = jid::parse(address))
+        return parsed->bare().str();
+    }
+    return std::string(address.substr(0, address.find('/')));
+  }
+
+  // The coroutines parked on an inbox that lets this in, woken.
+  constexpr void wake_inboxes([[maybe_unused]] const std::string& from) {
+    if constexpr (concurrent)
+      for (inbox* one : inboxes_)
+        if (one->waiter_ && (!one->from_ || *one->from_ == from))
+          scheduler_.wake(*std::exchange(one->waiter_, std::nullopt));
+  }
+
+  // Nobody reads, and somebody waits: the first of them woken, to read.
+  constexpr void hand_over() {
+    if constexpr (concurrent) {
+      if (reading_)
+        return;
+      for (inbox* one : inboxes_)
+        if (one->waiter_) {
+          scheduler_.wake(*std::exchange(one->waiter_, std::nullopt));
+          return;
+        }
+      if (receiver_waiting_)
+        scheduler_.wake(*std::exchange(receiver_waiting_, std::nullopt));
+    }
+  }
+
+  // What every inbox has taken, or has not been open for, let go of.
+  constexpr void trim_log() {
+    std::uint64_t kept = next_seq_;
+    for (const inbox* one : inboxes_)
+      kept = std::min(kept, one->held_ ? one->at_ - 1 : one->at_);
+    while (!log_.empty() && log_.front().seq < kept)
+      log_.pop_front();
   }
 
   constexpr std::expected<std::optional<stanza_t>, connect_error> take_pending() {
@@ -2220,9 +2336,17 @@ class session {
       ended_ = true;
     }
     // The stream over: every coroutine parked on a request hears it.
-    if (failed_)
+    if (failed_) {
       for (auto& entry : waiting_)
         wake(entry.second);
+      if constexpr (concurrent) {
+        for (inbox* waiting : inboxes_)
+          if (waiting->waiter_)
+            scheduler_.wake(*std::exchange(waiting->waiter_, std::nullopt));
+        if (receiver_waiting_)
+          scheduler_.wake(*std::exchange(receiver_waiting_, std::nullopt));
+      }
+    }
     return one;
   }
 
@@ -2444,6 +2568,19 @@ class session {
         scheduler_.wake(*std::exchange(waiting.waiter, std::nullopt));
   }
   std::map<std::string, slot> waiting_;
+  // The inboxes' log: what arrived since the oldest place one of them is at,
+  // each stanza once, where it stays while an inbox holds it.
+  struct logged {
+    std::uint64_t seq;
+    std::string from;  // its bare JID, prepared
+    std::unique_ptr<stanza_t> stanza;
+  };
+  detail::queue<logged> log_;
+  std::uint64_t next_seq_ = 0;
+  std::vector<inbox*> inboxes_;
+  bool receiving_ = false;         // somebody has called receive()
+  std::size_t archiving_ = 0;      // archive queries waiting for their results
+  std::optional<typename Scheduler::handle> receiver_waiting_;
   bool reading_ = false;
   std::optional<connect_error> failed_;
   bool deliver_unhandled_ = false;
@@ -2514,6 +2651,92 @@ class session<T, P, Handlers, Scheduler>::stanza_view : public std::ranges::view
   session* session_;
   std::optional<std::expected<stanza_t, connect_error>> current_;
   bool failed_ = false;
+};
+
+template <class T, class P, class Handlers, class Scheduler>
+class session<T, P, Handlers, Scheduler>::inbox {
+ public:
+  // Open from now on: what arrived before is not in it.
+  constexpr inbox(session& s, std::optional<std::string> from) : session_(&s) {
+    [[maybe_unused]] auto held = s.hold();
+    if (from)
+      from_ = session::bare_of(*from);
+    at_ = s.next_seq_;
+    s.inboxes_.push_back(this);
+  }
+  inbox(const inbox&) = delete;
+  inbox& operator=(const inbox&) = delete;
+
+  constexpr ~inbox() {
+    [[maybe_unused]] auto held = session_->hold();
+    std::erase(session_->inboxes_, this);
+    session_->trim_log();
+    session_->hand_over();
+  }
+
+  // The next stanza in it that filter takes -- the rest passed over, for
+  // this inbox only -- kept for the caller until the next call, or the
+  // inbox's end; nullptr where the stream has ended cleanly; or the error.
+  // Where nothing has come, it reads, or parks while another coroutine does.
+  template <class Filter = detail::everything>
+    requires std::predicate<Filter&, const stanza_t&>
+  constexpr std::expected<const stanza_t*, connect_error> try_next(Filter filter = {}) {
+    session& s = *session_;
+    [[maybe_unused]] auto held = s.hold();
+    held_ = false;
+    detail::on_exit over{[&s] {
+      s.trim_log();
+      s.hand_over();
+    }};
+    for (;;) {
+      while (at_ < s.next_seq_) {
+        auto& entry = s.log_.at(static_cast<std::size_t>(at_ - s.log_.front().seq));
+        ++at_;
+        if ((!from_ || *from_ == entry.from) && std::invoke(filter, std::as_const(*entry.stanza))) {
+          held_ = true;
+          return entry.stanza.get();
+        }
+      }
+      s.trim_log();
+      if (s.failed_) {
+        if (s.ended_)
+          return nullptr;
+        return std::unexpected(*s.failed_);
+      }
+      if (s.reading_) {
+        if constexpr (concurrent) {
+          waiter_ = s.scheduler_.current();
+          detail::on_exit forget{[this] { waiter_.reset(); }};
+          s.scheduler_.park();
+          continue;
+        } else {
+          return std::unexpected(connect_error{connect_code::xml, "read while another reads", std::nullopt});
+        }
+      }
+      s.read_and_route();
+    }
+  }
+
+  // The same, throwing a tern::connect_failure.
+  template <class Filter = detail::everything>
+    requires std::predicate<Filter&, const stanza_t&>
+  constexpr const stanza_t* next(Filter filter = {}) {
+    auto one = try_next(std::move(filter));
+    if (!one)
+      throw connect_failure(std::move(one).error());
+    return *one;
+  }
+
+  // The bare JID it lets in, where it was given one.
+  constexpr const std::optional<std::string>& from() const noexcept { return from_; }
+
+ private:
+  friend class session;
+  session* session_;
+  std::optional<std::string> from_;
+  std::uint64_t at_ = 0;      // the place of the next stanza for it
+  bool held_ = false;         // the one before at_ is the caller's still
+  std::optional<typename Scheduler::handle> waiter_{};
 };
 
 }  // namespace tern

@@ -138,6 +138,28 @@ session sees them through a scheduler, a type with three operations --
 themselves). A coroutine killed while it is parked leaves nothing behind: its
 answer is dropped when it comes. Timeouts and giving up are the caller's.
 
+Several coroutines may also each wait for stanzas of their own, without
+taking them from one another: an inbox holds every stanza that arrives while
+it is open -- what `receive()` would hand out -- and taking one out of one
+inbox leaves it in every other.
+
+```cpp
+auto from_romeo = session.open_inbox("romeo@example.net");  // a bare JID, or nothing: everything
+while (const tern::stanza_t* one = from_romeo.next())         // parks till one comes; nullptr at the end
+  handle(*one);
+```
+
+Each stanza is kept once, in a log the inboxes read at their own places,
+and let go of when every inbox has passed it; the one `next()` returned is
+the caller's until the next call. The address is a filter the session knows
+(prepared as RFC 7622 says, so `Romeo@Example.NET` is Romeo), so only what
+it lets in wakes a parked coroutine; `next()` takes any predicate besides,
+run in the waiting coroutine -- nothing stored, no type erasure. Whoever
+waits and finds nobody reading reads, and hands over to the next waiter when
+it has its stanza: no coroutine has to be the reader. While inboxes are open
+and nobody calls `receive()`, nothing is kept for it. A stanza that could
+not be read goes to `receive()` only.
+
 Requests coming in are answered by handlers given at `connect`, a static
 pack -- no map, no type erasure:
 
