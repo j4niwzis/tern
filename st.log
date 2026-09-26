@@ -1,0 +1,117 @@
+[1/2] Building CXX object test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o
+FAILED: test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o 
+/data/work/llvm/usr/lib/llvm-23/bin/clang++ -DBOOST_USE_MODULES -DGTEST_IMPORT_STD -DGTEST_USE_IMPORT_STD -isystem /tmp/tern/build/_deps/boost-pfr-src/include -isystem /tmp/tern/build/_deps/googletest-modules-src/googletest/include --sysroot=/data/work/llvm -stdlib=libc++ -nostdinc++ -isystem /data/work/llvm/usr/lib/llvm-23/include/c++/v1 -O3 -DNDEBUG -std=c++23 -fconstexpr-steps=100000000 -fno-experimental-new-constant-interpreter -MD -MT test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o -MF test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o.d @test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o.modmap -o test/CMakeFiles/tern-stream-test.dir/stream_test.cc.o -c /tmp/tern/test/stream_test.cc
+clang++: warning: argument unused during compilation: '-stdlib=libc++' [-Wunused-command-line-argument]
+In module 'chevron' imported from /tmp/tern/test/stream_test.cc:5:
+/tmp/chevron/src/typed.cc:1178:96: warning: expression result unused [-Wunused-value]
+ 1178 |           ((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
+      |            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    ^
+/tmp/chevron/src/typed.cc:1177:9: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element(const tern::thread &, std::string_view, std::string_view, std::string_view, std::size_t)::(lambda)::operator()<0UL, 1UL>' requested here
+ 1177 |         [&]<std::size_t... I>(std::index_sequence<I...>) {
+      |         ^
+/tmp/chevron/src/typed.cc:1307:17: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element<tern::thread>' requested here
+ 1307 |           got = element(*occurrence, child_uri, name.first, uri, level + 1);
+      |                 ^
+/tmp/chevron/src/typed.cc:1178:45: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::member<tern::basic::message_chat<chevron::tagged<chevron::any>>, 6UL>' requested here
+ 1178 |           ((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
+      |                                             ^
+/tmp/chevron/src/typed.cc:1177:9: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element(const tern::basic::message_chat<chevron::tagged<chevron::any>> &, std::string_view, std::string_view, std::string_view, std::size_t)::(lambda)::operator()<0UL, 1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL>' requested here
+ 1177 |         [&]<std::size_t... I>(std::index_sequence<I...>) {
+      |         ^
+/tmp/chevron/src/typed.cc:1422:33: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element<tern::basic::message_chat<chevron::tagged<chevron::any>>>' requested here
+ 1422 |       const auto next = writer_.element(*value_, schema.uri, schema.local, std::string_view(), 0);
+      |                                 ^
+/tmp/chevron/src/typed.cc:1343:72: note: (skipping 4 contexts in backtrace; use -ftemplate-backtrace-limit=0 to see all)
+ 1343 |     constexpr explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+      |                                                                        ^
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/concepts.h:52:3: note: in instantiation of requirement here
+   52 |   ranges::begin(__t); // sometimes equality-preserving
+      |   ^~~~~~~~~~~~~~~~~~
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/concepts.h:51:17: note: while substituting template arguments into constraint expression here
+   51 | concept range = requires(_Tp& __t) {
+      |                 ^~~~~~~~~~~~~~~~~~~~
+   52 |   ranges::begin(__t); // sometimes equality-preserving
+      |   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   53 |   ranges::end(__t);
+      |   ~~~~~~~~~~~~~~~~~
+   54 | };
+      | ~
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/range_adaptor.h:70:11: note: while checking the satisfaction of concept 'range<chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>, std::ranges::__pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>>' requested here
+   70 | template <ranges::range _Range, _RangeAdaptorClosure _Closure>
+      |           ^~~~~~~~~~~~~
+/tmp/tern/test/stream_test.cc:835:54: note: while checking constraint satisfaction for template 'operator|<chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>, std::ranges::__pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>>' required here
+  835 |   const std::string written = chevron::to_xml(*read) | std::ranges::to<std::string>();
+      |                                                      ^
+/tmp/tern/test/stream_test.cc:835:54: note: while substituting deduced template arguments into function template 'operator|' [with _Range = xml_view<std::remove_cvref_t<const tern::basic::message_chat<chevron::tagged<chevron::any>> &>>, _Closure = __pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>]
+In module 'chevron' imported from /tmp/tern/test/stream_test.cc:5:
+/tmp/chevron/src/typed.cc:1178:96: warning: expression result unused [-Wunused-value]
+ 1178 |           ((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
+      |            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    ^
+/tmp/chevron/src/typed.cc:1177:9: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element(const tern::basic::message_chat<chevron::tagged<chevron::any>> &, std::string_view, std::string_view, std::string_view, std::size_t)::(lambda)::operator()<0UL, 1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL>' requested here
+ 1177 |         [&]<std::size_t... I>(std::index_sequence<I...>) {
+      |         ^
+/tmp/chevron/src/typed.cc:1422:33: note: in instantiation of function template specialization 'chevron::detail::lazy::writer::element<tern::basic::message_chat<chevron::tagged<chevron::any>>>' requested here
+ 1422 |       const auto next = writer_.element(*value_, schema.uri, schema.local, std::string_view(), 0);
+      |                                 ^
+/tmp/chevron/src/typed.cc:1343:72: note: in instantiation of member function 'chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>::pull' requested here
+ 1343 |     constexpr explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+      |                                                                        ^
+/tmp/chevron/src/typed.cc:1404:12: note: in instantiation of member function 'chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>::iterator::iterator' requested here
+ 1404 |     return iterator(this);
+      |            ^
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/access.h:75:34: note: in instantiation of member function 'chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>::begin' requested here
+   75 |     return _LIBCPP_AUTO_CAST(__t.begin());
+      |                                  ^
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__utility/auto_cast.h:20:82: note: expanded from macro '_LIBCPP_AUTO_CAST'
+   20 | #define _LIBCPP_AUTO_CAST(expr) static_cast<::std::__decay_t<decltype((expr))> >(expr)
+      |                                                                                  ^
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/concepts.h:52:3: note: (skipping 1 context in backtrace; use -ftemplate-backtrace-limit=0 to see all)
+   52 |   ranges::begin(__t); // sometimes equality-preserving
+      |   ^
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/concepts.h:52:3: note: in instantiation of requirement here
+   52 |   ranges::begin(__t); // sometimes equality-preserving
+      |   ^~~~~~~~~~~~~~~~~~
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/concepts.h:51:17: note: while substituting template arguments into constraint expression here
+   51 | concept range = requires(_Tp& __t) {
+      |                 ^~~~~~~~~~~~~~~~~~~~
+   52 |   ranges::begin(__t); // sometimes equality-preserving
+      |   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   53 |   ranges::end(__t);
+      |   ~~~~~~~~~~~~~~~~~
+   54 | };
+      | ~
+/data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/range_adaptor.h:70:11: note: while checking the satisfaction of concept 'range<chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>, std::ranges::__pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>>' requested here
+   70 | template <ranges::range _Range, _RangeAdaptorClosure _Closure>
+      |           ^~~~~~~~~~~~~
+/tmp/tern/test/stream_test.cc:835:54: note: while checking constraint satisfaction for template 'operator|<chevron::xml_view<tern::basic::message_chat<chevron::tagged<chevron::any>>>, std::ranges::__pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>>' required here
+  835 |   const std::string written = chevron::to_xml(*read) | std::ranges::to<std::string>();
+      |                                                      ^
+/tmp/tern/test/stream_test.cc:835:54: note: while substituting deduced template arguments into function template 'operator|' [with _Range = xml_view<std::remove_cvref_t<const tern::basic::message_chat<chevron::tagged<chevron::any>> &>>, _Closure = __pipeable<std::__bind_back_t<(lambda at /data/work/llvm/usr/lib/llvm-23/include/c++/v1/__ranges/to.h:214:20), std::__1::tuple<>>>]
+In module 'chevron' imported from /tmp/tern/test/stream_test.cc:5:
+/tmp/chevron/src/parser.cc:233:32: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  233 |     const std::uint32_t stop = mask_of(chunk < static_cast<unsigned char>(0x20)) &
+      |                                ^
+/tmp/chevron/src/parser.cc:234:33: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  234 |                                ~mask_of(chunk == static_cast<unsigned char>('\t')) &
+      |                                 ^
+/tmp/chevron/src/parser.cc:235:33: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  235 |                                ~mask_of(chunk == static_cast<unsigned char>('\n'));
+      |                                 ^
+/tmp/chevron/src/parser.cc:197:35: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  197 | inline std::uint32_t mask_of(auto flags) {
+      |                                   ^
+/tmp/chevron/src/parser.cc:212:12: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  212 |           (mask_of(chunk < static_cast<unsigned char>(0x20)) &
+      |            ^
+/tmp/chevron/src/parser.cc:213:13: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  213 |            ~mask_of(chunk == static_cast<unsigned char>('\t')) &
+      |             ^
+/tmp/chevron/src/parser.cc:214:13: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  214 |            ~mask_of(chunk == static_cast<unsigned char>('\n'))) |
+      |             ^
+/tmp/chevron/src/parser.cc:215:11: warning: AVX vector argument of type '__attribute__((__vector_size__(32 * sizeof(char)))) char' (vector of 32 'char' values) without 'avx' enabled changes the ABI [-Wpsabi]
+  215 |           mask_of(chunk >= static_cast<unsigned char>(0x80));
+      |           ^
+Killed
+ninja: build stopped: subcommand failed.
+exit 1

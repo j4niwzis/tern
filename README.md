@@ -79,7 +79,11 @@ Each kind of stanza is a type of its own, with what that kind can carry:
 `tern::message_t`, `tern::presence_t` and `tern::iq_t` are the variants of
 each, `tern::stanza_t` the variant of those, and `std::visit` tells them
 apart. The error kinds carry their `<error/>` parsed, as `reason`: its type
-(cancel, continue, modify, auth, wait) and `condition()`.
+(cancel, continue, modify, auth, wait), its condition as a type of its own
+(`what`, a `chevron::tagged` of `tern::conditions::service_unavailable` and the
+other 21 of RFC 6120, 8.3.3; `condition()` gives its name), its `text`, and an
+application's own condition kept as it came. Stream errors the same, with the
+25 conditions of 4.9.3 in `tern::stream_conditions`.
 
 What a stanza carries, `payload`, is a vector of `chevron::tagged` of the
 types a protocol names -- chosen by the element's name and read straight into

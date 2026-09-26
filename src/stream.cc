@@ -41,53 +41,169 @@ struct auth { static constexpr std::string_view xml_value = "auth"; };
 struct wait { static constexpr std::string_view xml_value = "wait"; };
 }  // namespace error_types
 
+// A defined condition (RFC 6120, 8.3.3 for stanzas, 4.9.3 for streams): an
+// element of its namespace, by name, read as a type of its own. gone,
+// redirect and see-other-host say where, as their text.
+template <chevron::fixed_string Namespace, chevron::fixed_string Name>
+struct condition {
+  std::optional<std::string> value;
+};
+
+template <chevron::fixed_string Namespace, chevron::fixed_string Name>
+constexpr auto xml_schema(chevron::type<condition<Namespace, Name>>) {
+  using namespace chevron::members;
+  return chevron::schema<condition<Namespace, Name>>().name(Namespace.view(), Name.view()).members(text());
+}
+
+// The <text/> an error may have, in its language.
+template <chevron::fixed_string Namespace>
+struct error_text {
+  std::optional<std::string> lang;
+  std::string content;
+};
+
+template <chevron::fixed_string Namespace>
+constexpr auto xml_schema(chevron::type<error_text<Namespace>>) {
+  using namespace chevron::members;
+  return chevron::schema<error_text<Namespace>>()
+      .name(Namespace.view(), "text")
+      .members(attribute("lang", xml_namespace), text());
+}
+
+template <chevron::fixed_string Name>
+using stanza_condition = condition<"urn:ietf:params:xml:ns:xmpp-stanzas", Name>;
+template <chevron::fixed_string Name>
+using stream_condition = condition<"urn:ietf:params:xml:ns:xmpp-streams", Name>;
+
+namespace conditions {
+using bad_request = stanza_condition<"bad-request">;
+using conflict = stanza_condition<"conflict">;
+using feature_not_implemented = stanza_condition<"feature-not-implemented">;
+using forbidden = stanza_condition<"forbidden">;
+using gone = stanza_condition<"gone">;
+using internal_server_error = stanza_condition<"internal-server-error">;
+using item_not_found = stanza_condition<"item-not-found">;
+using jid_malformed = stanza_condition<"jid-malformed">;
+using not_acceptable = stanza_condition<"not-acceptable">;
+using not_allowed = stanza_condition<"not-allowed">;
+using not_authorized = stanza_condition<"not-authorized">;
+using policy_violation = stanza_condition<"policy-violation">;
+using recipient_unavailable = stanza_condition<"recipient-unavailable">;
+using redirect = stanza_condition<"redirect">;
+using registration_required = stanza_condition<"registration-required">;
+using remote_server_not_found = stanza_condition<"remote-server-not-found">;
+using remote_server_timeout = stanza_condition<"remote-server-timeout">;
+using resource_constraint = stanza_condition<"resource-constraint">;
+using service_unavailable = stanza_condition<"service-unavailable">;
+using subscription_required = stanza_condition<"subscription-required">;
+using undefined_condition = stanza_condition<"undefined-condition">;
+using unexpected_request = stanza_condition<"unexpected-request">;
+}  // namespace conditions
+
+namespace stream_conditions {
+using bad_format = stream_condition<"bad-format">;
+using bad_namespace_prefix = stream_condition<"bad-namespace-prefix">;
+using conflict = stream_condition<"conflict">;
+using connection_timeout = stream_condition<"connection-timeout">;
+using host_gone = stream_condition<"host-gone">;
+using host_unknown = stream_condition<"host-unknown">;
+using improper_addressing = stream_condition<"improper-addressing">;
+using internal_server_error = stream_condition<"internal-server-error">;
+using invalid_from = stream_condition<"invalid-from">;
+using invalid_namespace = stream_condition<"invalid-namespace">;
+using invalid_xml = stream_condition<"invalid-xml">;
+using not_authorized = stream_condition<"not-authorized">;
+using not_well_formed = stream_condition<"not-well-formed">;
+using policy_violation = stream_condition<"policy-violation">;
+using remote_connection_failed = stream_condition<"remote-connection-failed">;
+using reset = stream_condition<"reset">;
+using resource_constraint = stream_condition<"resource-constraint">;
+using restricted_xml = stream_condition<"restricted-xml">;
+using see_other_host = stream_condition<"see-other-host">;
+using system_shutdown = stream_condition<"system-shutdown">;
+using undefined_condition = stream_condition<"undefined-condition">;
+using unsupported_encoding = stream_condition<"unsupported-encoding">;
+using unsupported_feature = stream_condition<"unsupported-feature">;
+using unsupported_stanza_type = stream_condition<"unsupported-stanza-type">;
+using unsupported_version = stream_condition<"unsupported-version">;
+}  // namespace stream_conditions
+
+using stanza_condition_t = chevron::tagged<
+    conditions::bad_request, conditions::conflict, conditions::feature_not_implemented, conditions::forbidden,
+    conditions::gone, conditions::internal_server_error, conditions::item_not_found, conditions::jid_malformed,
+    conditions::not_acceptable, conditions::not_allowed, conditions::not_authorized, conditions::policy_violation,
+    conditions::recipient_unavailable, conditions::redirect, conditions::registration_required,
+    conditions::remote_server_not_found, conditions::remote_server_timeout, conditions::resource_constraint,
+    conditions::service_unavailable, conditions::subscription_required, conditions::undefined_condition,
+    conditions::unexpected_request>;
+
+using stream_condition_t = chevron::tagged<
+    stream_conditions::bad_format, stream_conditions::bad_namespace_prefix, stream_conditions::conflict,
+    stream_conditions::connection_timeout, stream_conditions::host_gone, stream_conditions::host_unknown,
+    stream_conditions::improper_addressing, stream_conditions::internal_server_error,
+    stream_conditions::invalid_from, stream_conditions::invalid_namespace, stream_conditions::invalid_xml,
+    stream_conditions::not_authorized, stream_conditions::not_well_formed, stream_conditions::policy_violation,
+    stream_conditions::remote_connection_failed, stream_conditions::reset, stream_conditions::resource_constraint,
+    stream_conditions::restricted_xml, stream_conditions::see_other_host, stream_conditions::system_shutdown,
+    stream_conditions::undefined_condition, stream_conditions::unsupported_encoding,
+    stream_conditions::unsupported_feature, stream_conditions::unsupported_stanza_type,
+    stream_conditions::unsupported_version>;
+
+// The name of the condition a tagged holds.
+template <class Tagged>
+constexpr std::string_view condition_name(const Tagged& held) {
+  return std::visit([]<class C>(const C&) { return std::string_view(xml_schema(chevron::type<C>{}).local); },
+                    held.data());
+}
+
+// The condition of that name, where one of Tagged's has it.
+template <class Tagged>
+constexpr std::optional<Tagged> condition_named(std::string_view name) {
+  std::optional<Tagged> out;
+  [&]<class... C>(std::type_identity<chevron::tagged<C...>>) {
+    ((void)(!out && std::string_view(xml_schema(chevron::type<C>{}).local) == name && (out.emplace(C{}), true)), ...);
+  }(std::type_identity<Tagged>{});
+  return out;
+}
+
 struct stanza_error {
   std::optional<std::variant<error_types::cancel, error_types::continue_, error_types::modify,
                              error_types::auth, error_types::wait>> type;
-  std::vector<chevron::any> details;
+  std::optional<std::string> by;
+  std::optional<stanza_condition_t> what;  // the defined condition
+  std::optional<error_text<"urn:ietf:params:xml:ns:xmpp-stanzas">> text;
+  std::vector<chevron::any> application;  // an application-specific condition, of the application's
 
-  std::string_view condition() const {
-    for (const chevron::any& one : details)
-      if (one.uri == stanza_errors_namespace && one.local != "text")
-        return one.local;
-    return {};
-  }
+  std::string_view condition() const { return what ? condition_name(*what) : std::string_view(); }
 };
 
 constexpr auto xml_schema(chevron::type<stanza_error>) {
   using namespace chevron::members;
-  return chevron::schema<stanza_error>().name(client_namespace, "error").members(attribute(), unknown_children());
+  return chevron::schema<stanza_error>()
+      .name(client_namespace, "error")
+      .members(attribute(), attribute(), _, _, unknown_children());
 }
 
 // A stream error (RFC 6120, 4.9): the server ends the stream, and says why.
 struct stream_error {
-  std::vector<chevron::any> details;
+  std::optional<stream_condition_t> what;
+  std::optional<error_text<"urn:ietf:params:xml:ns:xmpp-streams">> text;
+  std::vector<chevron::any> application;
 
-  // The condition: an element of the stream-errors namespace, by its name.
-  std::string_view condition() const {
-    for (const chevron::any& one : details)
-      if (one.uri == "urn:ietf:params:xml:ns:xmpp-streams" && one.local != "text")
-        return one.local;
-    return {};
-  }
+  std::string_view condition() const { return what ? condition_name(*what) : std::string_view(); }
 
   // For see-other-host (4.9.3.19): the host, and port, to connect to instead.
   std::optional<std::string> other_host() const {
-    for (const chevron::any& one : details)
-      if (one.uri == "urn:ietf:params:xml:ns:xmpp-streams" && one.local == "see-other-host") {
-        std::string out;
-        for (const chevron::any_node& node : one.children)
-          if (const auto* text = std::get_if<std::string>(&node.value))
-            out += *text;
-        return out;
-      }
+    if (what)
+      if (const auto* other = what->get_if<stream_conditions::see_other_host>())
+        return other->value.value_or("");
     return std::nullopt;
   }
 };
 
 constexpr auto xml_schema(chevron::type<stream_error>) {
   using namespace chevron::members;
-  return chevron::schema<stream_error>().name(stream_namespace, "error").members(unknown_children());
+  return chevron::schema<stream_error>().name(stream_namespace, "error").members(_, _, unknown_children());
 }
 
 // A conversation a message belongs to (RFC 6121, 5.2.5): its identifier,
@@ -552,48 +668,43 @@ struct roster_cache {
 
 namespace tern::detail {
 
-// What negotiation reads: the stream's features, and the answers to it.
+// What negotiation reads: the stream's features, each a type -- what no
+// member names is passed over -- and the answers to it.
+struct tls_required {};
 struct starttls_feature {
-  std::vector<chevron::any> children;  // <required/>, if it is there
+  std::optional<tls_required> mandatory;
 
-  bool required() const {
-    return std::ranges::any_of(children, [](const chevron::any& one) {
-      return one.uri == tls_namespace && one.local == "required";
-    });
-  }
+  bool required() const { return mandatory.has_value(); }
 };
 struct mechanisms_feature {
   std::vector<std::string> mechanism;
 };
-struct bind_feature {
-  std::vector<chevron::any> anything;
-};
+struct bind_feature {};
 struct rosterver_feature {};
 struct features {
   std::optional<starttls_feature> starttls;
   std::optional<mechanisms_feature> mechanisms;
   std::optional<bind_feature> bind;
   std::optional<rosterver_feature> ver;
-  std::vector<chevron::any> other;
 };
 
+constexpr auto xml_schema(chevron::type<tls_required>) {
+  return chevron::schema<tls_required>().name(tls_namespace, "required");
+}
 constexpr auto xml_schema(chevron::type<starttls_feature>) {
-  using namespace chevron::members;
-  return chevron::schema<starttls_feature>().name(tls_namespace, "starttls").members(unknown_children());
+  return chevron::schema<starttls_feature>().name(tls_namespace, "starttls");
 }
 constexpr auto xml_schema(chevron::type<mechanisms_feature>) {
   return chevron::schema<mechanisms_feature>().name(sasl_namespace, "mechanisms");
 }
 constexpr auto xml_schema(chevron::type<bind_feature>) {
-  using namespace chevron::members;
-  return chevron::schema<bind_feature>().name(bind_namespace, "bind").members(unknown_children());
+  return chevron::schema<bind_feature>().name(bind_namespace, "bind");
 }
 constexpr auto xml_schema(chevron::type<rosterver_feature>) {
   return chevron::schema<rosterver_feature>().name("urn:xmpp:features:rosterver", "ver");
 }
 constexpr auto xml_schema(chevron::type<features>) {
-  using namespace chevron::members;
-  return chevron::schema<features>().name(stream_namespace, "features").members(_, _, _, _, unknown_children());
+  return chevron::schema<features>().name(stream_namespace, "features");
 }
 
 // The answer to binding: the full JID.
@@ -1062,9 +1173,12 @@ class session {
   // stanza-errors namespace (RFC 6120, 8.3.3).
   template <iq_request Question>
   void refuse(const Question& question, std::string_view condition = "service-unavailable") {
-    chevron::any said{std::string(stanza_errors_namespace), std::string(condition), {}, {}};
     send(basic::iq_error<chevron::tagged<chevron::any>>{
-        .to = question.from, .id = question.id, .reason = stanza_error{error_types::cancel{}, {std::move(said)}}});
+        .to = question.from,
+        .id = question.id,
+        .reason = stanza_error{.type = error_types::cancel{},
+                               .what = condition_named<stanza_condition_t>(condition).value_or(
+                                   stanza_condition_t(conditions::undefined_condition{}))}});
   }
 
   class stanza_view;
