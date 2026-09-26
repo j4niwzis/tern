@@ -51,7 +51,7 @@ TEST(Stream, ScramBindAndStanzas) {
       "</stream:stream>";
   std::string_view input = server;
   std::string written;
-  auto session = tern::connect(input, std::back_inserter(written), rfc7677());
+  auto session = tern::try_connect(input, std::back_inserter(written), rfc7677());
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
   EXPECT_EQ(session->jid(), "user@example.com/tern");
   EXPECT_EQ(written, header +
@@ -98,7 +98,7 @@ TEST(Stream, StartTlsThenPlain) {
   tern::options how = rfc7677();
   how.start_tls = [&] { read_at_hook = read; };
   std::string written;
-  auto session = tern::connect(counted, std::back_inserter(written), how);
+  auto session = tern::try_connect(counted, std::back_inserter(written), how);
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
   EXPECT_EQ(read_at_hook, before_tls.size());
   EXPECT_EQ(written, header + "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>" + header +
@@ -111,7 +111,7 @@ TEST(Stream, WhatStopsIt) {
   const auto code = [](const std::string& server, tern::options how) {
     std::string_view input = server;
     std::string written;
-    auto session = tern::connect(input, std::back_inserter(written), how);
+    auto session = tern::try_connect(input, std::back_inserter(written), how);
     return session ? std::optional<connect_code>() : std::optional<connect_code>(session.error().code);
   };
   const std::string tls_only =
@@ -183,21 +183,21 @@ TEST(Stream, RequestAndAnswer) {
   std::string written;
   auto how = rfc7677();
   how.plain_without_tls = true;
-  auto session = tern::connect(input, std::back_inserter(written), how);
+  auto session = tern::try_connect(input, std::back_inserter(written), how);
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
 
   written.clear();
-  const auto pong = session->request(tern::iq{.type = "get", .payload = {chevron::to_any(ping{})}});
+  const auto pong = session->try_request(tern::iq{.type = "get", .payload = {chevron::to_any(ping{})}});
   ASSERT_TRUE(pong.has_value());
   EXPECT_EQ(pong->id, "tern-1");
   EXPECT_EQ(written, "<iq xmlns=\"jabber:client\" id=\"tern-1\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>");
 
-  const auto server_version = session->request<version>(tern::get, version_query{});
+  const auto server_version = session->try_request<version>(tern::get, version_query{});
   ASSERT_TRUE(server_version.has_value());
   EXPECT_EQ(server_version->name, "server");
   EXPECT_EQ(server_version->version, "1.0");
 
-  const auto refused = session->request<version>(tern::get, version_query{});
+  const auto refused = session->try_request<version>(tern::get, version_query{});
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().code, tern::request_code::error_reply);
   ASSERT_TRUE(refused.error().reply.has_value());
@@ -280,16 +280,16 @@ TEST(Stream, TwoRequestsInFlight) {
     pass.first.release();
     pass.second.acquire();
   };
-  auto session = tern::connect(input, std::back_inserter(written), how);
+  auto session = tern::try_connect(input, std::back_inserter(written), how);
   ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
 
   std::optional<std::expected<tern::iq, tern::request_error>> first, second;
   std::thread b([&] {
     pass.second.acquire();
-    second.emplace(session->request(tern::iq{.type = "get"}));
+    second.emplace(session->try_request(tern::iq{.type = "get"}));
   });
   std::thread a([&] {
-    first.emplace(session->request(tern::iq{.type = "get"}));
+    first.emplace(session->try_request(tern::iq{.type = "get"}));
     pass.second.release();
   });
   a.join();
@@ -300,4 +300,36 @@ TEST(Stream, TwoRequestsInFlight) {
   EXPECT_EQ((*first)->payload.at(0).local, "a");
   EXPECT_EQ((*second)->id, "tern-2");
   EXPECT_EQ((*second)->payload.at(0).local, "b");
+}
+
+// The same, throwing.
+TEST(Stream, Throwing) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result +
+      "<iq type='result' id='tern-1' from='example.com'/>"
+      "<iq type='error' id='tern-2' from='example.com'><error type='cancel'>"
+      "<feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  EXPECT_EQ(session.request(tern::iq{.type = "get"}).id, "tern-1");
+  try {
+    session.request(tern::iq{.type = "get"});
+    ADD_FAILURE() << "an error answer was not thrown";
+  } catch (const tern::request_failure& failure) {
+    EXPECT_EQ(failure.error.code, tern::request_code::error_reply);
+    EXPECT_EQ(failure.error.reply->type, "error");
+  }
+  EXPECT_FALSE(session.receive());  // the stream ends, cleanly
+
+  std::string_view refused = "<?xml version='1.0'?>";
+  std::string nowhere;
+  EXPECT_THROW(tern::connect(refused, std::back_inserter(nowhere), how), tern::connect_failure);
 }

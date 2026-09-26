@@ -11,7 +11,7 @@ auto session = tern::connect(socket_bytes, socket_writer, {
     .username = "juliet", .domain = "example.com", .password = "…",
     .resource = "balcony",
     .start_tls = [&] { /* put TLS under the input and the output */ },
-}).value();  // throws std::bad_expected_access<tern::connect_error> if it fails
+});  // throws tern::connect_failure; try_connect hands a std::expected back instead
 for (auto&& stanza : session.stanzas()) {     // ends where the server ends the stream
   if (!stanza) {
     report(stanza.error());
@@ -38,3 +38,23 @@ session.send(tern::message{.to = "romeo@example.net", .type = "chat", .body = "h
 Built on [chevron](https://github.com/j4niwzis/chevron), the XML of streams.
 For now it is taken from a checkout: configure with
 `-DTERN_CHEVRON_DIR=<path to chevron>`.
+
+## Requests
+
+```cpp
+tern::iq answer = session.request(tern::iq{.type = "get", .payload = {chevron::to_any(ping{})}});
+auto version = session.request<server_version>(tern::get, version_query{});   // typed both ways
+auto maybe = session.try_request<server_version>(tern::get, version_query{}); // std::expected instead
+```
+
+An iq is sent -- with an id made up where it has none -- and its answer
+awaited: the result, or the error, which is thrown as a `tern::request_failure`
+(or handed back by `try_request`) with the error iq kept whole. Whatever else
+arrives in the meantime is kept for `receive()` and `stanzas()`, in order.
+Several requests may be in flight at once, from coroutines or threads: each
+answer goes to the request it belongs to, one of them reads the stream at a
+time, and the others wait in `options::yield`.
+
+Every call that can fail comes in two forms, as in scan: `connect`, `receive`
+and `request` throw; `try_connect`, `try_receive` and `try_request` hand a
+`std::expected` back.

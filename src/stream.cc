@@ -241,6 +241,23 @@ struct request_error {
   std::optional<iq> reply;
 };
 
+// The same failures, thrown by the calls that do not hand them back.
+struct connect_failure : std::runtime_error {
+  explicit connect_failure(connect_error what)
+      : std::runtime_error("tern: the stream failed" + (what.detail.empty() ? std::string() : ": " + what.detail)),
+        error(std::move(what)) {}
+  connect_error error;
+};
+
+struct request_failure : std::runtime_error {
+  explicit request_failure(request_error what)
+      : std::runtime_error(what.code == request_code::connection    ? "tern: the stream failed during a request"
+                           : what.code == request_code::error_reply ? "tern: the request was answered with an error"
+                                                                    : "tern: the answer was not what was asked for"),
+        error(std::move(what)) {}
+  request_error error;
+};
+
 // A stream that is authenticated and bound: stanzas in, stanzas out.
 template <class I, class S, class Out>
 class session {
@@ -252,7 +269,7 @@ class session {
 
   // The next stanza, as it arrives; nothing where the stream has ended
   // cleanly; or the error.
-  std::expected<std::optional<stanza>, connect_error> receive() {
+  std::expected<std::optional<stanza>, connect_error> try_receive() {
     // What arrived while a request waited for its answer, first.
     if (!pending_.empty()) {
       stanza one = std::move(pending_.front());
@@ -283,7 +300,7 @@ class session {
   // id, from the address asked (RFC 6120, 8.2.3). Whatever else arrives in the
   // meantime is kept, and handed out by receive() and stanzas() afterwards, in
   // order. An id is made up where the iq has none.
-  std::expected<iq, request_error> request(iq question) {
+  std::expected<iq, request_error> try_request(iq question) {
     if (question.id.empty())
       question.id = "tern-" + std::to_string(++last_id_);
     const std::string id = question.id;
@@ -323,13 +340,38 @@ class session {
     }
   }
 
+  // The same, throwing: the answer, or a tern::request_failure.
+  iq request(iq question) {
+    auto answer = try_request(std::move(question));
+    if (!answer)
+      throw request_failure(std::move(answer).error());
+    return std::move(*answer);
+  }
+
+  template <chevron::described Answer, chevron::described Payload>
+  Answer request(std::string_view type, const Payload& payload, std::optional<std::string> to = std::nullopt) {
+    auto answer = try_request<Answer>(type, payload, std::move(to));
+    if (!answer)
+      throw request_failure(std::move(answer).error());
+    return std::move(*answer);
+  }
+
+  // The next stanza, or nothing where the stream has ended cleanly; a failure
+  // is thrown, a tern::connect_failure.
+  std::optional<stanza> receive() {
+    auto one = try_receive();
+    if (!one)
+      throw connect_failure(std::move(one).error());
+    return std::move(*one);
+  }
+
   // The same, typed: the payload written from a type with a chevron schema,
   // the answer's first child read into another.
   template <chevron::described Answer, chevron::described Payload>
-  std::expected<Answer, request_error> request(std::string_view type, const Payload& payload,
-                                               std::optional<std::string> to = std::nullopt) {
+  std::expected<Answer, request_error> try_request(std::string_view type, const Payload& payload,
+                                                   std::optional<std::string> to = std::nullopt) {
     iq question{.to = std::move(to), .type = std::string(type), .payload = {chevron::to_any(payload)}};
-    auto answer = request(std::move(question));
+    auto answer = try_request(std::move(question));
     if (!answer)
       return std::unexpected(std::move(answer).error());
     if (answer->payload.empty())
@@ -463,7 +505,7 @@ class session<I, S, Out>::stanza_view : public std::ranges::view_interface<stanz
       current_.reset();
       return;
     }
-    auto next = session_->receive();
+    auto next = session_->try_receive();
     if (!next) {
       current_.emplace(std::unexpected(next.error()));
       failed_ = true;
@@ -669,7 +711,7 @@ export namespace tern {
 // has to outlive it.
 template <std::ranges::input_range Input, std::output_iterator<char> Out>
 std::expected<session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>, connect_error>
-connect(Input& input, Out output, const options& how) {
+try_connect(Input& input, Out output, const options& how) {
   using result = session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>;
   result s(std::ranges::begin(input), std::ranges::end(input), std::move(output));
   detail::negotiation<result> steps(s, how);
@@ -678,6 +720,16 @@ connect(Input& input, Out output, const options& how) {
   s.bound_to(std::move(steps.jid));
   s.yield_with(how.yield);
   return s;
+}
+
+// The same, throwing: the session, or a tern::connect_failure.
+template <std::ranges::input_range Input, std::output_iterator<char> Out>
+session<std::ranges::iterator_t<Input>, std::ranges::sentinel_t<Input>, Out>
+connect(Input& input, Out output, const options& how) {
+  auto made = try_connect(input, std::move(output), how);
+  if (!made)
+    throw connect_failure(std::move(made).error());
+  return std::move(*made);
 }
 
 }  // namespace tern
