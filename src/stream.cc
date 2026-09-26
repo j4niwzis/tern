@@ -166,29 +166,57 @@ constexpr std::optional<Tagged> condition_named(std::string_view name) {
   return out;
 }
 
+using error_type_t = std::variant<error_types::cancel, error_types::continue_, error_types::modify,
+                                  error_types::auth, error_types::wait>;
+
+namespace basic {
+
+// A stanza's <error/> (RFC 6120, 8.3): its type, the defined condition, its
+// text, and an application-specific condition (8.3.2) -- A, a tagged of the
+// types the protocol's errors<> names, read straight into them; one it does
+// not name is passed over. void where it names none.
+template <class A>
 struct stanza_error {
-  std::optional<std::variant<error_types::cancel, error_types::continue_, error_types::modify,
-                             error_types::auth, error_types::wait>> type;
+  std::optional<error_type_t> type;
   std::optional<std::string> by;
   std::optional<stanza_condition_t> what;  // the defined condition
   std::optional<error_text<"urn:ietf:params:xml:ns:xmpp-stanzas">> text;
-  std::vector<chevron::any> application;  // an application-specific condition, of the application's
+  std::optional<A> application;
 
   std::string_view condition() const { return what ? condition_name(*what) : std::string_view(); }
 };
 
-constexpr auto xml_schema(chevron::type<stanza_error>) {
+template <>
+struct stanza_error<void> {
+  std::optional<error_type_t> type;
+  std::optional<std::string> by;
+  std::optional<stanza_condition_t> what;
+  std::optional<error_text<"urn:ietf:params:xml:ns:xmpp-stanzas">> text;
+
+  std::string_view condition() const { return what ? condition_name(*what) : std::string_view(); }
+};
+
+template <class A>
+constexpr auto xml_schema(chevron::type<stanza_error<A>>) {
   using namespace chevron::members;
-  return chevron::schema<stanza_error>()
-      .name(client_namespace, "error")
-      .members(attribute(), attribute(), _, _, unknown_children());
+  if constexpr (std::is_void_v<A>)
+    return chevron::schema<stanza_error<A>>().name(client_namespace, "error").members(attribute(), attribute(), _, _);
+  else
+    return chevron::schema<stanza_error<A>>()
+        .name(client_namespace, "error")
+        .members(attribute(), attribute(), _, _, _);
 }
 
+}  // namespace basic
+
+// The <error/> of a protocol that names no application conditions.
+using stanza_error = basic::stanza_error<void>;
+
 // A stream error (RFC 6120, 4.9): the server ends the stream, and says why.
+// An application's own condition (4.9.4) is passed over.
 struct stream_error {
   std::optional<stream_condition_t> what;
   std::optional<error_text<"urn:ietf:params:xml:ns:xmpp-streams">> text;
-  std::vector<chevron::any> application;
 
   std::string_view condition() const { return what ? condition_name(*what) : std::string_view(); }
 
@@ -203,7 +231,7 @@ struct stream_error {
 
 constexpr auto xml_schema(chevron::type<stream_error>) {
   using namespace chevron::members;
-  return chevron::schema<stream_error>().name(stream_namespace, "error").members(_, _, unknown_children());
+  return chevron::schema<stream_error>().name(stream_namespace, "error");
 }
 
 // A conversation a message belongs to (RFC 6121, 5.2.5): its identifier,
@@ -338,11 +366,11 @@ struct message_headline {
   std::optional<tern::thread> thread;
   std::vector<X> payload;
 };
-template <class X>
+template <class X, class R = tern::stanza_error>
 struct message_error {
   std::optional<std::string> to, from, id, lang, subject, body;
   std::optional<tern::thread> thread;
-  stanza_error reason;  // the <error/>
+  R reason;  // the <error/>
   std::vector<X> payload;
 };
 
@@ -382,10 +410,10 @@ struct presence_probe {
   std::optional<std::string> to, from, id, lang;
   std::vector<X> payload;
 };
-template <class X>
+template <class X, class R = tern::stanza_error>
 struct presence_error {
   std::optional<std::string> to, from, id, lang;
-  stanza_error reason;
+  R reason;
   std::vector<X> payload;
 };
 
@@ -410,12 +438,12 @@ struct iq_result {
   std::optional<std::string> lang;
   std::vector<X> payload;
 };
-template <class X>
+template <class X, class R = tern::stanza_error>
 struct iq_error {
   std::optional<std::string> to, from;
   std::string id;
   std::optional<std::string> lang;
-  stanza_error reason;
+  R reason;
   std::vector<X> payload;
 };
 
@@ -456,9 +484,9 @@ template <class X>
 constexpr auto xml_schema(chevron::type<message_headline<X>>) {
   return stanza_schema<message_headline<X>>("message").template when<"type">("headline");
 }
-template <class X>
-constexpr auto xml_schema(chevron::type<message_error<X>>) {
-  return stanza_schema<message_error<X>>("message").template when<"type">("error");
+template <class X, class R>
+constexpr auto xml_schema(chevron::type<message_error<X, R>>) {
+  return stanza_schema<message_error<X, R>>("message").template when<"type">("error");
 }
 
 template <class X>
@@ -489,9 +517,9 @@ template <class X>
 constexpr auto xml_schema(chevron::type<presence_probe<X>>) {
   return stanza_schema<presence_probe<X>>("presence").template when<"type">("probe");
 }
-template <class X>
-constexpr auto xml_schema(chevron::type<presence_error<X>>) {
-  return stanza_schema<presence_error<X>>("presence").template when<"type">("error");
+template <class X, class R>
+constexpr auto xml_schema(chevron::type<presence_error<X, R>>) {
+  return stanza_schema<presence_error<X, R>>("presence").template when<"type">("error");
 }
 
 template <class X>
@@ -506,9 +534,9 @@ template <class X>
 constexpr auto xml_schema(chevron::type<iq_result<X>>) {
   return stanza_schema<iq_result<X>>("iq").template when<"type">("result");
 }
-template <class X>
-constexpr auto xml_schema(chevron::type<iq_error<X>>) {
-  return stanza_schema<iq_error<X>>("iq").template when<"type">("error");
+template <class X, class R>
+constexpr auto xml_schema(chevron::type<iq_error<X, R>>) {
+  return stanza_schema<iq_error<X, R>>("iq").template when<"type">("error");
 }
 
 }  // namespace basic
@@ -522,23 +550,39 @@ template <class... T>
 struct answers {};
 template <class... T>
 struct extensions {};
+// Application-specific error conditions (RFC 6120, 8.3.2).
+template <class... T>
+struct errors {};
 
-template <class Queries = queries<>, class Answers = answers<>, class Extensions = extensions<>>
+namespace detail {
+template <class... R>
+struct application_of {
+  using type = chevron::tagged<R...>;
+};
+template <>
+struct application_of<> {
+  using type = void;
+};
+}  // namespace detail
+
+template <class Queries = queries<>, class Answers = answers<>, class Extensions = extensions<>,
+          class Errors = errors<>>
 struct protocol;
 
-template <class... Q, class... A, class... E>
-struct protocol<queries<Q...>, answers<A...>, extensions<E...>> {
+template <class... Q, class... A, class... E, class... R>
+struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>> {
   using query_payload = chevron::tagged<Q..., chevron::any>;
   using answer_payload = chevron::tagged<A..., chevron::any>;
   using extension = chevron::tagged<E..., chevron::any>;
   using error_payload = chevron::tagged<chevron::any>;
+  using stanza_error = basic::stanza_error<typename detail::application_of<R...>::type>;
 
   struct message {
     using normal = basic::message_normal<extension>;
     using chat = basic::message_chat<extension>;
     using groupchat = basic::message_groupchat<extension>;
     using headline = basic::message_headline<extension>;
-    using error = basic::message_error<extension>;
+    using error = basic::message_error<extension, stanza_error>;
   };
   struct presence {
     using available = basic::presence_available<extension>;
@@ -548,13 +592,13 @@ struct protocol<queries<Q...>, answers<A...>, extensions<E...>> {
     using unsubscribe = basic::presence_unsubscribe<extension>;
     using unsubscribed = basic::presence_unsubscribed<extension>;
     using probe = basic::presence_probe<extension>;
-    using error = basic::presence_error<extension>;
+    using error = basic::presence_error<extension, stanza_error>;
   };
   struct iq {
     using get = basic::iq_get<query_payload>;
     using set = basic::iq_set<query_payload>;
     using result = basic::iq_result<answer_payload>;
-    using error = basic::iq_error<error_payload>;
+    using error = basic::iq_error<error_payload, stanza_error>;
   };
 
   using message_t = std::variant<typename message::normal, typename message::chat, typename message::groupchat,
@@ -958,11 +1002,13 @@ export namespace tern {
 // type asked for.
 enum class request_code { connection, error_reply, bad_answer };
 
-struct request_error {
+template <class E>
+struct basic_request_error {
   request_code code;
   std::optional<connect_error> connection;
-  std::optional<stanza_error> reply;
+  std::optional<E> reply;
 };
+using request_error = basic_request_error<stanza_error>;
 
 // The same failures, thrown by the calls that do not hand them back.
 struct connect_failure : std::runtime_error {
@@ -972,14 +1018,16 @@ struct connect_failure : std::runtime_error {
   connect_error error;
 };
 
-struct request_failure : std::runtime_error {
-  explicit request_failure(request_error what)
+template <class E>
+struct basic_request_failure : std::runtime_error {
+  explicit basic_request_failure(basic_request_error<E> what)
       : std::runtime_error(what.code == request_code::connection    ? "tern: the stream failed during a request"
                            : what.code == request_code::error_reply ? "tern: the request was answered with an error"
                                                                     : "tern: the answer was not what was asked for"),
         error(std::move(what)) {}
-  request_error error;
+  basic_request_error<E> error;
 };
+using request_failure = basic_request_failure<stanza_error>;
 
 // A query: a payload that says what kind of request carries it -- tern::get
 // or tern::set -- and what its answer is read into, or void.
@@ -1018,6 +1066,9 @@ class session {
   using stanza_t = typename P::stanza_t;
   using result = typename P::iq::result;
   using error = typename P::iq::error;
+  // A request's failure, with the protocol's <error/>.
+  using request_error = basic_request_error<typename P::stanza_error>;
+  using request_failure = basic_request_failure<typename P::stanza_error>;
 
   session(T transport, Handlers handlers, Yield yield)
       : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), yield_(std::move(yield)) {
@@ -1726,7 +1777,7 @@ class negotiation {
       request += "<resource>" + escaped(*o_.resource) + "</resource>";
     write(request + "</bind></iq>");
     auto read = chevron::read_one_of<basic::iq_result<chevron::tagged<bind_result, chevron::any>>,
-                                     basic::iq_error<chevron::tagged<chevron::any>>>(s_.source());
+                                     basic::iq_error<chevron::tagged<chevron::any>, stanza_error>>(s_.source());
     if (!read)
       return fail(connect_code::xml, "bind: " + read.error().where);
     if (const auto* refused = std::get_if<1>(&*read))

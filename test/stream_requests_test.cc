@@ -273,3 +273,52 @@ TEST(Stream, FromChunks) {
     EXPECT_EQ(std::get<tern::message::chat>(*message).body, "\xd0\x9f\xd1\x80\xd0\xb8") << size;
   }
 }
+
+namespace {
+
+// XEP-0060's <unsupported/>, an application-specific condition.
+struct pubsub_unsupported {
+  std::string feature;
+};
+constexpr auto xml_schema(chevron::type<pubsub_unsupported>) {
+  using namespace chevron::members;
+  return chevron::schema<pubsub_unsupported>()
+      .name("http://jabber.org/protocol/pubsub#errors", "unsupported")
+      .member<"feature">(attribute());
+}
+
+using pubsub_protocol =
+    tern::protocol<tern::queries<>, tern::answers<>, tern::extensions<>, tern::errors<pubsub_unsupported>>;
+
+}  // namespace
+
+// RFC 6120, 8.3.2: an application-specific condition the protocol names is
+// read straight into its type; one it does not name is passed over.
+TEST(Stream, ApplicationConditions) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") + bind_features + bind_result +
+      "<iq type='error' id='tern-1' from='pubsub.example.com'><error type='cancel'>"
+      "<feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/>"
+      "<unsupported xmlns='http://jabber.org/protocol/pubsub#errors' feature='retrieve-items'/></error></iq>"
+      "<iq type='error' id='tern-2' from='pubsub.example.com'><error type='cancel'>"
+      "<feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/><other xmlns='urn:x'/></error></iq>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect<pubsub_protocol>(input, std::back_inserter(written), how);
+  const auto first = session.try_request(tern::iq::get{.to = "pubsub.example.com"});
+  ASSERT_FALSE(first.has_value());
+  ASSERT_TRUE(first.error().reply.has_value());
+  EXPECT_EQ(first.error().reply->condition(), "feature-not-implemented");
+  ASSERT_TRUE(first.error().reply->application.has_value());
+  EXPECT_EQ(first.error().reply->application->as<pubsub_unsupported>().feature, "retrieve-items");
+  const auto second = session.try_request(tern::iq::get{.to = "pubsub.example.com"});
+  ASSERT_FALSE(second.has_value());
+  ASSERT_TRUE(second.error().reply.has_value());
+  EXPECT_FALSE(second.error().reply->application.has_value());  // not named: passed over, no tree
+}

@@ -54,7 +54,6 @@ TEST(Stream, StreamErrorAndClosing) {
     ASSERT_TRUE(error->text.has_value());
     EXPECT_EQ(error->text->content, "Replaced by new connection");
     EXPECT_EQ(error->text->lang, "en");
-    EXPECT_TRUE(error->application.empty());
   }
   {
     std::string written;
