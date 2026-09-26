@@ -23,7 +23,7 @@ endif()
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG 5a9905a64913ee94b342451e820aee51d5e07801
+  GIT_TAG ab9e381b68a638a279c165badcf426c802b0cd1f
   LICENSE LicenseRef-proprietary
   SYSTEM NEVER
   TARGETS chevron)

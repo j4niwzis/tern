@@ -601,6 +601,39 @@ TEST(Stream, NoReadingAhead) {
   EXPECT_FALSE(input.asked_past);  // the answer's '>' was the last byte read
 }
 
+// Input as chunks -- what each read of a socket brought -- split anywhere,
+// inside a tag or a UTF-8 sequence: the same session as from the bytes.
+TEST(Stream, FromChunks) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") + bind_features + bind_result +
+      "<iq type='result' id='tern-1' from='example.com'/>"
+      "<message from='juliet@example.com/balcony' type='chat'><body>\xd0\x9f\xd1\x80\xd0\xb8</body></message>";
+  for (const std::size_t size : {1u, 3u, 7u, 4096u}) {
+    std::vector<std::string> chunks;
+    for (std::size_t at = 0; at < server.size(); at += size)
+      chunks.push_back(server.substr(at, size));
+    std::string written;
+    auto how = rfc7677();
+    how.plain_without_tls = true;
+    auto made = tern::try_connect(chunks, std::back_inserter(written), how);
+    if (!made) {
+      ADD_FAILURE() << "size " << size << ": " << made.error().detail << " / " << written;
+      continue;
+    }
+    auto& session = *made;
+    EXPECT_FALSE(session.jid().empty()) << size;
+    EXPECT_TRUE(session.try_request(tern::iq::get{.to = "example.com"}).has_value()) << size;
+    const auto one = session.receive();
+    ASSERT_TRUE(one.has_value()) << size;
+    const auto* message = std::get_if<tern::message_t>(&*one);
+    ASSERT_NE(message, nullptr);
+    EXPECT_EQ(std::get<tern::message::chat>(*message).body, "\xd0\x9f\xd1\x80\xd0\xb8") << size;
+  }
+}
+
 // RFC 6121, 3 and 4: subscriptions to bare JIDs, initial presence, and
 // unavailable presence before the stream ends.
 TEST(Stream, PresenceAndSubscriptions) {

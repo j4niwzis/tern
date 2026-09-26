@@ -245,6 +245,9 @@ int main(int argc, char** argv) {
       std::println("bound: {}", second.jid());
       second.available();
 
+      if (cache.items.contains(second_bare)) {
+        step("already subscribed, from an earlier run: " + second_bare);
+      } else {
       step(first_bare + " asks for " + second_bare + "'s presence; approved");
       (void)first.subscribe(second_bare);
       first_ends.flush();
@@ -266,6 +269,8 @@ int main(int argc, char** argv) {
       });
       std::println("pushed: {}; roster version {}, {} item(s)", pushed, cache.ver.value_or("(none)"),
                    cache.items.size());
+
+      }
 
       step("a message from " + first_bare + " to " + second_bare);
       first.send(tern::message::chat{.to = second_bare, .body = "Wherefore art thou, Romeo? (sent by tern)",

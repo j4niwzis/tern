@@ -485,9 +485,11 @@ namespace tern::detail {
 
 // An input range read for chevron: bytes fed to a parser only as far as the
 // next event needs -- up to a '>' or a '<', where an event can end -- and
-// never further.
+// never further. Or a range of chunks, each fed whole.
 template <class I, class S>
 class source {
+  static constexpr bool chunks = std::ranges::input_range<std::iter_reference_t<I>>;
+
  public:
   source(I at, S end) : at_(std::move(at)), end_(std::move(end)) {}
 
@@ -498,6 +500,18 @@ class source {
         return one;
       if (finished_)
         return one;
+      // A range of chunks -- what each read of a socket brought -- is fed a
+      // chunk at a time.
+      if constexpr (chunks) {
+        if (at_ == end_) {
+          parser_.finish();
+          finished_ = true;
+        } else {
+          parser_.feed(*at_);
+          ++at_;
+        }
+        continue;
+      } else {
       // The end is asked about only where a byte is needed: over a socket,
       // asking is waiting for the peer, and after the '>' that ends a
       // stanza there may be nothing more for a long while.
@@ -519,12 +533,16 @@ class source {
         parser_.finish();
         finished_ = true;
       }
+      }
     }
   }
 
   // A new stream, after TLS or authentication: a new document, from here on.
+  // What came after the old document in the same chunk belongs to the new.
   void restart() {
+    const std::string rest(parser_.unread());
     parser_ = chevron::parser();
+    parser_.feed(rest);
     finished_ = false;
   }
 
