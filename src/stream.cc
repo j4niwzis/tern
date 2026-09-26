@@ -218,6 +218,19 @@ struct stream_error {
         return one.local;
     return {};
   }
+
+  // For see-other-host (4.9.3.19): the host, and port, to connect to instead.
+  std::optional<std::string> other_host() const {
+    for (const chevron::any& one : details)
+      if (one.uri == "urn:ietf:params:xml:ns:xmpp-streams" && one.local == "see-other-host") {
+        std::string out;
+        for (const chevron::any_node& node : one.children)
+          if (const auto* text = std::get_if<std::string>(&node.value))
+            out += *text;
+        return out;
+      }
+    return std::nullopt;
+  }
 };
 
 constexpr auto xml_schema(chevron::type<stream_error>) {
@@ -356,6 +369,10 @@ struct connect_error {
   connect_code code;
   std::string detail;
   std::optional<sasl::failure> sasl;
+  // With the stream error see-other-host (RFC 6120, 4.9.3.19): where the
+  // server sends the client instead -- a host, an IPv4 address or an IPv6
+  // one in brackets, and perhaps a port. The caller reconnects there.
+  std::optional<std::string> other_host{};
 };
 
 // What the TLS layer gives for channel binding: the type and its data.
@@ -797,7 +814,8 @@ class session {
     // A stream error ends the stream: its condition is the failure.
     if (one) {
       if (const auto* ended = std::get_if<stream_error>(&*one))
-        return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt});
+        return std::unexpected(
+            connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt, ended->other_host()});
     }
     if (one)
       return std::visit(
@@ -960,9 +978,13 @@ class negotiation {
     for (;;) {
       if (auto opened = open(); !opened)
         return opened;
-      auto offered = chevron::read<features>(s_.source());
-      if (!offered)
-        return fail(connect_code::xml, "stream features: " + offered.error().where);
+      auto next = chevron::read_one_of<features, stream_error>(s_.source());
+      if (!next)
+        return fail(connect_code::xml, "stream features: " + next.error().where);
+      if (const auto* ended = std::get_if<stream_error>(&*next))
+        return std::unexpected(
+            connect_error{connect_code::stream_error, std::string(ended->condition()), std::nullopt, ended->other_host()});
+      const features* offered = &std::get<features>(*next);
       if (offered->starttls && !secured) {
         if (!o_.start_tls) {
           if (offered->starttls->required())
@@ -1029,21 +1051,35 @@ class negotiation {
     if (!start)
       return fail(connect_code::xml, "while negotiating");
     nonza out{std::string(start->name.uri), std::string(start->name.local), {}};
-    if (out.uri == stream_namespace && out.local == "error")
-      return fail(connect_code::stream_error, "");
+    // A stream error may come here too (4.9): its condition is its first
+    // child, and see-other-host's text is the host.
+    const bool ended = out.uri == stream_namespace && out.local == "error";
+    std::string first_text;
+    std::size_t children = 0;
     for (std::size_t depth = 1; depth > 0;) {
       auto next = s_.source().next();
       if (!next || !*next)
         return fail(connect_code::closed, "while negotiating");
       if (const auto* start = std::get_if<chevron::start_element>(&**next)) {
-        if (depth == 1 && out.first_child.empty())
-          out.first_child = std::string(start->name.local);
+        if (depth == 1) {
+          ++children;
+          if (out.first_child.empty())
+            out.first_child = std::string(start->name.local);
+        }
         ++depth;
       }
       else if (std::holds_alternative<chevron::end_element>(**next))
         --depth;
       else if (depth == 1)
         out.text += std::get<chevron::text>(**next).content;
+      else if (depth == 2 && children == 1)
+        first_text += std::get<chevron::text>(**next).content;
+    }
+    if (ended) {
+      std::optional<std::string> other;
+      if (out.first_child == "see-other-host")
+        other = std::move(first_text);
+      return std::unexpected(connect_error{connect_code::stream_error, out.first_child, std::nullopt, std::move(other)});
     }
     return out;
   }

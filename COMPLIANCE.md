@@ -13,8 +13,8 @@ What the RFCs require only of servers is left out.
 | 4.3.2 | The stream is restarted, with a new header, after TLS and after SASL success | done | `Stream.StartTlsThenPlain`, `Stream.ScramBindAndStanzas` |
 | 4.4 | Closing: `</stream:stream>` sent, and the peer's closing tag waited for before the connection is closed | done: `close()` sends it, and `stanzas()` goes on until the peer's; the connection is the caller's to close after that | `Stream.StreamErrorAndClosing` |
 | 4.6 | Whitespace keepalives are accepted between stanzas | done | `Stream.FailureConditionAndKeepalives` |
-| 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | done after binding (`connect_code::stream_error`, the condition as detail); partial during negotiation, where the condition is not given | `Stream.StreamErrorAndClosing` |
-| 4.9.3.19 | `see-other-host`: reconnect to the host given | not yet | — |
+| 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | done, during negotiation and after it (`connect_code::stream_error`, the condition as detail) | `Stream.StreamErrorAndClosing`, `Stream.SeeOtherHost` |
+| 4.9.3.19 | `see-other-host`: reconnect to the host given | done: the host (and port) in `connect_error::other_host`; tern owns no socket, so the caller reconnects | `Stream.SeeOtherHost` |
 | 5.3.1 | STARTTLS used where offered; a server that requires it and a client that cannot is an error | done | `Stream.StartTlsThenPlain`, `Stream.WhatStopsIt` |
 | 5.4.3.3 | After `<proceed/>`, nothing is read or written before TLS is in place | done: the hook runs before anything past `<proceed/>` is read | `Stream.StartTlsThenPlain` |
 | 5.4.3.3 | After `<failure/>` for STARTTLS the stream is closed | partial: negotiation fails; the caller closes | — |

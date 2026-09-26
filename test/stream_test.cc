@@ -537,6 +537,54 @@ TEST(Stream, FailureConditionAndKeepalives) {
   }
 }
 
+// RFC 6120, 4.9: a stream error while negotiating says its condition, and
+// see-other-host where to go -- there, or once the session is bound.
+TEST(Stream, SeeOtherHost) {
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:error><see-other-host xmlns='urn:ietf:params:xml:ns:xmpp-streams'>[2001:41D0:1:A49b::1]:9222"
+        "</see-other-host></stream:error></stream:stream>";
+    std::string_view input = server;
+    std::string written;
+    const auto session = tern::try_connect(input, std::back_inserter(written), rfc7677());
+    ASSERT_FALSE(session.has_value());
+    EXPECT_EQ(session.error().code, tern::connect_code::stream_error);
+    EXPECT_EQ(session.error().detail, "see-other-host");
+    EXPECT_EQ(session.error().other_host, "[2001:41D0:1:A49b::1]:9222");
+  }
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:error><host-unknown xmlns='urn:ietf:params:xml:ns:xmpp-streams'/></stream:error></stream:stream>";
+    std::string_view input = server;
+    std::string written;
+    const auto session = tern::try_connect(input, std::back_inserter(written), rfc7677());
+    ASSERT_FALSE(session.has_value());
+    EXPECT_EQ(session.error().detail, "host-unknown");
+    EXPECT_FALSE(session.error().other_host.has_value());
+  }
+  {
+    const std::string server =
+        server_header("s1") +
+        "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+        "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+        "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+        bind_features + bind_result +
+        "<stream:error><see-other-host xmlns='urn:ietf:params:xml:ns:xmpp-streams'>im.example.com:9090"
+        "</see-other-host></stream:error></stream:stream>";
+    std::string_view input = server;
+    std::string written;
+    auto how = rfc7677();
+    how.plain_without_tls = true;
+    auto session = tern::connect(input, std::back_inserter(written), how);
+    const auto one = session.try_receive();
+    ASSERT_FALSE(one.has_value());
+    EXPECT_EQ(one.error().detail, "see-other-host");
+    EXPECT_EQ(one.error().other_host, "im.example.com:9090");
+  }
+}
+
 // RFC 5802, 6 and RFC 9266: over TLS, with the TLS layer's binding data, a
 // -PLUS mechanism where offered, the binding in the GS2 header and in c=;
 // where none is offered, y,, says so.
