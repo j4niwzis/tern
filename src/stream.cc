@@ -20,6 +20,7 @@ inline constexpr std::string_view tls_namespace = "urn:ietf:params:xml:ns:xmpp-t
 inline constexpr std::string_view sasl_namespace = "urn:ietf:params:xml:ns:xmpp-sasl";
 inline constexpr std::string_view bind_namespace = "urn:ietf:params:xml:ns:xmpp-bind";
 inline constexpr std::string_view xml_namespace = "http://www.w3.org/XML/1998/namespace";
+inline constexpr std::string_view stanza_errors_namespace = "urn:ietf:params:xml:ns:xmpp-stanzas";
 
 // What a stanza of the error kind says went wrong (RFC 6120, 8.3): what to do
 // about it, and the condition -- an element of the stanza-errors namespace,
@@ -300,6 +301,15 @@ struct options {
   // suspend here and let the others run -- a coroutine's yield, or a wait on
   // a condition with threads. Without it, only one request may be in flight.
   std::function<void()> yield;
+  // A get or a set nobody handles is answered with service-unavailable, as
+  // RFC 6120, 8.2.3 requires a reply; with this, it is handed out by
+  // receive() and stanzas() instead, and answering it is the caller's.
+  bool deliver_unhandled = false;
+};
+
+// Thrown by a request handler: the request is answered with this error.
+struct refusal {
+  std::string condition = "service-unavailable";
 };
 
 }  // namespace tern
@@ -442,9 +452,54 @@ class session {
       auto one = read_locked();
       if (!one || !*one)
         return one;
-      if (!claimed(**one))
-        return one;
+      if (claimed(**one) || dispatched(**one))
+        continue;
+      return one;
     }
+  }
+
+  // Requests carrying a Query, handled: the query read, the handler's answer
+  // sent back as the result -- an Answer with a chevron schema, or nothing
+  // for an empty result; a tern::refusal thrown sends the error instead.
+  template <chevron::described Query, class Handler>
+  void handle(Handler handler) {
+    constexpr auto schema = xml_schema(chevron::type<Query>{});
+    handlers_[{std::string(schema.uri), std::string(schema.local)}] =
+        [handler = std::move(handler)](const chevron::any& payload) -> std::vector<chevron::any> {
+          auto query = chevron::from_any<Query>(payload);
+          if (!query)
+            throw refusal{"bad-request"};
+          if constexpr (std::is_void_v<decltype(handler(*query))>) {
+            handler(*query);
+            return {};
+          } else {
+            return {chevron::to_any(handler(*query))};
+          }
+        };
+  }
+
+  // A request answered: the result, to whom it came from, with its id.
+  template <class Question>
+    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
+  void answer(const Question& question, std::vector<chevron::any> payload = {}) {
+    send(iq::result{.to = question.from, .id = question.id, .payload = std::move(payload)});
+  }
+
+  template <class Question, chevron::described Payload>
+    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
+  void answer(const Question& question, const Payload& payload) {
+    answer(question, std::vector<chevron::any>{chevron::to_any(payload)});
+  }
+
+  // A request refused: the error, of type cancel, with a condition of the
+  // stanza-errors namespace (RFC 6120, 8.3.3).
+  template <class Question>
+    requires(std::same_as<Question, iq::get> || std::same_as<Question, iq::set>)
+  void refuse(const Question& question, std::string_view condition = "service-unavailable") {
+    chevron::any said{std::string(stanza_errors_namespace), std::string(condition), {}, {}};
+    send(iq::error{.to = question.from,
+                   .id = question.id,
+                   .reason = stanza_error{error_types::cancel{}, {std::move(said)}}});
   }
 
   // A get or a set sent, and its answer awaited: the result, or the error,
@@ -488,7 +543,7 @@ class session {
         waiting_.erase(id);
         return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
       }
-      if (!claimed(**one))
+      if (!claimed(**one) && !dispatched(**one))
         pending_.push_back(std::move(**one));
     }
   }
@@ -543,8 +598,10 @@ class session {
     return std::move(*one);
   }
 
-  // For connect(): how a waiting request lets others run.
+  // For connect(): how a waiting request lets others run, and whether
+  // requests nobody handles are handed out.
   void yield_with(std::function<void()> yield) { yield_ = std::move(yield); }
+  void deliver_unhandled(bool deliver) { deliver_unhandled_ = deliver; }
 
  private:
   // One reader at a time; a failure is everyone's.
@@ -561,6 +618,38 @@ class session {
 
   // An answer to a request in flight goes to it: the result or the error with
   // its id, from the address it asked (RFC 6120, 8.2.3).
+  // A get or a set that arrived: to its handler, or refused -- every one gets
+  // a reply -- unless requests nobody handles are handed out.
+  bool dispatched(stanza_t& one) {
+    auto* kind = std::get_if<iq_t>(&one);
+    if (!kind)
+      return false;
+    return std::visit(
+        [&](auto& question) {
+          using type = std::remove_cvref_t<decltype(question)>;
+          if constexpr (std::same_as<type, iq::get> || std::same_as<type, iq::set>) {
+            if (!question.payload.empty()) {
+              const auto found = handlers_.find({question.payload.front().uri, question.payload.front().local});
+              if (found != handlers_.end()) {
+                try {
+                  answer(question, found->second(question.payload.front()));
+                } catch (const refusal& refused) {
+                  refuse(question, refused.condition);
+                }
+                return true;
+              }
+            }
+            if (deliver_unhandled_)
+              return false;
+            refuse(question, "service-unavailable");
+            return true;
+          } else {
+            return false;
+          }
+        },
+        *kind);
+  }
+
   bool claimed(stanza_t& one) {
     auto* kind = std::get_if<iq_t>(&one);
     if (!kind)
@@ -650,6 +739,9 @@ class session {
   bool reading_ = false;
   std::optional<connect_error> failed_;
   std::function<void()> yield_;
+  bool deliver_unhandled_ = false;
+  std::map<std::pair<std::string, std::string>, std::function<std::vector<chevron::any>(const chevron::any&)>>
+      handlers_;
 };
 
 template <class I, class S, class Out>
@@ -905,6 +997,7 @@ try_connect(Input& input, Out output, const options& how) {
     return std::unexpected(done.error());
   s.bound_to(std::move(steps.jid));
   s.yield_with(how.yield);
+  s.deliver_unhandled(how.deliver_unhandled);
   return s;
 }
 

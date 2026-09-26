@@ -337,3 +337,40 @@ TEST(Stream, Throwing) {
   std::string nowhere;
   EXPECT_THROW(tern::connect(refused, std::back_inserter(nowhere), how), tern::connect_failure);
 }
+
+// RFC 6120, 8.2.3: every get and set gets exactly one reply -- from its
+// handler, or service-unavailable where there is none.
+TEST(Stream, EveryRequestIsAnswered) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result +
+      "<iq type='get' id='v1' from='romeo@example.net/orchard'><query xmlns='jabber:iq:version'/></iq>"
+      "<iq type='set' id='u1' from='romeo@example.net/orchard'><unknown xmlns='urn:x'/></iq>"
+      "<message from='romeo@example.net/orchard' type='chat'><body>after</body></message>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  session.handle<version_query>([](const version_query&) { return version{"tern", "0.1"}; });
+  written.clear();
+  std::vector<std::size_t> kinds;
+  for (auto&& one : session.stanzas()) {
+    ASSERT_TRUE(one.has_value());
+    kinds.push_back(one->index());
+  }
+  EXPECT_EQ(kinds, (std::vector<std::size_t>{0}));  // only the message: the requests were answered
+  EXPECT_NE(written.find("id=\"v1\" type=\"result\"><query xmlns=\"jabber:iq:version\"><name>tern</name>"
+                         "<version>0.1</version></query></iq>"),
+            std::string::npos)
+      << written;
+  EXPECT_NE(written.find("id=\"u1\" type=\"error\"><error type=\"cancel\"><service-unavailable "
+                         "xmlns=\"urn:ietf:params:xml:ns:xmpp-stanzas\"/></error></iq>"),
+            std::string::npos)
+      << written;
+  EXPECT_NE(written.find("to=\"romeo@example.net/orchard\""), std::string::npos) << written;
+}
