@@ -1284,6 +1284,90 @@ struct no_scheduler {
   using handle = int;
 };
 
+// Threads as the coroutines, running at once: the session is held by one of
+// them at a time -- a turn, taken again by the one that has it -- and let go
+// of while the reader waits for bytes, and while a request is parked. With
+// the standard library only.
+class thread_scheduler {
+  struct turn {
+    std::mutex lock;
+    std::atomic<std::thread::id> owner{};
+    int depth = 0;
+
+    void enter() {
+      if (owner.load() == std::this_thread::get_id()) {
+        ++depth;
+        return;
+      }
+      lock.lock();
+      owner = std::this_thread::get_id();
+      depth = 1;
+    }
+    void leave() {
+      if (--depth == 0) {
+        owner = std::thread::id();
+        lock.unlock();
+      }
+    }
+    int leave_all() {
+      const int held = depth;
+      depth = 0;
+      owner = std::thread::id();
+      lock.unlock();
+      return held;
+    }
+    void resume(int held) {
+      lock.lock();
+      owner = std::this_thread::get_id();
+      depth = held;
+    }
+  };
+
+ public:
+  using handle = std::binary_semaphore*;
+
+  // The turn, while it lives.
+  class held {
+   public:
+    explicit held(turn* t) : turn_(t) { turn_->enter(); }
+    held(const held&) = delete;
+    held& operator=(const held&) = delete;
+    ~held() { turn_->leave(); }
+
+   private:
+    turn* turn_;
+  };
+
+  // The turn let go of, while it lives.
+  class released {
+   public:
+    explicit released(turn* t) : turn_(t), depth_(t->leave_all()) {}
+    released(const released&) = delete;
+    released& operator=(const released&) = delete;
+    ~released() { turn_->resume(depth_); }
+
+   private:
+    turn* turn_;
+    int depth_;
+  };
+
+  held hold() const { return held(turn_.get()); }
+  released release() const { return released(turn_.get()); }
+  handle current() const { return &mine(); }
+  void park() const {
+    released away(turn_.get());
+    mine().acquire();
+  }
+  void wake(handle one) const { one->release(); }
+
+ private:
+  static std::binary_semaphore& mine() {
+    thread_local std::binary_semaphore self{0};
+    return self;
+  }
+  std::shared_ptr<turn> turn_ = std::make_shared<turn>();
+};
+
 }  // namespace tern
 
 namespace tern::detail {
@@ -1532,6 +1616,7 @@ class session {
 
   // XEP-0198: what resuming this stream needs, where it can be resumed.
   std::optional<sm_state> sm() const {
+    [[maybe_unused]] auto held = hold();
     if (!sm_enabled_ || sm_id_.empty())
       return std::nullopt;
     return sm_state{sm_id_, jid_, inbound_, acked_, std::vector<std::string>(unacked_.begin(), unacked_.end())};
@@ -1539,6 +1624,7 @@ class session {
 
   // XEP-0198: the server asked to say how many stanzas it has handled.
   void request_ack() {
+    [[maybe_unused]] auto held = hold();
     if (sm_enabled_)
       write_raw("<r xmlns='urn:xmpp:sm:3'/>");
   }
@@ -1546,6 +1632,7 @@ class session {
   // XEP-0313: a page of the archive -- the messages that answer the query,
   // read straight into their types, and how the page ends.
   std::expected<archive_page, request_error> try_archive(mam::query query, std::optional<std::string> to = {}) {
+    [[maybe_unused]] auto held = hold();
     static_assert(P::template answers_with<mam::fin> && P::extension::template can_hold<mam::result>,
                   "tern: archive() needs mam::fin among the answers<> and mam::result among the extensions<>");
     if (!query.queryid)
@@ -1586,6 +1673,7 @@ class session {
   // request goes to it -- the coroutine parked on it woken -- a query to its
   // handler, and the rest comes out here.
   std::expected<std::optional<stanza_t>, connect_error> try_receive() {
+    [[maybe_unused]] auto held = hold();
     if constexpr (concurrent)
       reader_ = scheduler_.current();
     for (;;) {
@@ -1627,6 +1715,7 @@ class session {
   // caller's; surviving them is the session's.
   template <iq_request Question>
   outcome try_request(Question question) {
+    [[maybe_unused]] auto held = hold();
     const std::string id = start(std::move(question));
     detail::on_exit forget{[this, &id] { abandon(id); }};
     for (;;) {
@@ -1714,6 +1803,7 @@ class session {
   // With stream management, it is kept until the server acknowledges it.
   template <chevron::described Stanza>
   void send(const Stanza& one) {
+    [[maybe_unused]] auto held = hold();
     out_.clear();
     chevron::write(std::back_inserter(out_), one);
     if (sm_enabled_)
@@ -1726,6 +1816,7 @@ class session {
   // before its own closing tag still arrives: go on reading stanzas() until
   // it ends, and only then close the connection.
   void close() {
+    [[maybe_unused]] auto held = hold();
     // RFC 6121, 4.5: unavailable presence before the stream ends, where
     // presence was sent.
     if (announced_) {
@@ -1741,6 +1832,7 @@ class session {
   // Broadcast, it says what this client can do (XEP-0115), where the
   // protocol's extensions have caps.
   void available(typename P::presence::available said = {}) {
+    [[maybe_unused]] auto held = hold();
     if (!said.to) {
       announced_ = true;
       if constexpr (P::extension::template can_hold<caps::c>)
@@ -2024,8 +2116,15 @@ class session {
   // One reader at a time; a failure is everyone's.
   std::expected<std::optional<stanza_t>, connect_error> read_locked() {
     reading_ = true;
-    detail::on_exit release{[this] { reading_ = false; }};
-    auto one = read_stanza();
+    detail::on_exit done_reading{[this] { reading_ = false; }};
+    std::expected<std::optional<stanza_t>, connect_error> one;
+    {
+      [[maybe_unused]] auto away = release();  // others send and park while this waits for bytes
+      one = read_stanza();
+    }
+    apply_acks();
+    if (sm_enabled_ && ((one && *one) || (!one && one.error().code == connect_code::malformed_stanza)))
+      ++inbound_;
     if (!one && one.error().code != connect_code::malformed_stanza) {
       failed_ = one.error();
     } else if (one && !*one) {
@@ -2160,19 +2259,16 @@ class session {
     auto one = P::read_one(source_);
     if (one) {
       if (std::holds_alternative<sm::r>(*one)) {
-        if (sm_enabled_)
-          write_raw("<a xmlns='urn:xmpp:sm:3' h='" + std::to_string(inbound_) + "'/>");
+        ++acks_asked_;
         acks_read_ = true;
         return std::nullopt;
       }
       if (const auto* ack = std::get_if<sm::a>(&*one)) {
-        acknowledged(ack->h);
+        acked_h_ = ack->h;
         acks_read_ = true;
         return std::nullopt;
       }
     }
-    if (sm_enabled_ && (one || one.error().code != chevron::read_code::unexpected_element))
-      ++inbound_;
     // A stream error ends the stream: its condition is the failure.
     if (one) {
       if (const auto* ended = std::get_if<stream_error>(&*one))
@@ -2213,7 +2309,7 @@ class session {
 
   T transport_;
   Handlers handlers_;
-  Scheduler scheduler_;
+  mutable Scheduler scheduler_;
   detail::source<std::remove_reference_t<decltype(std::declval<transport_type&>().input())>> source_;
   std::string out_;
   std::string jid_;
@@ -2229,6 +2325,30 @@ class session {
     std::optional<typename Scheduler::handle> waiter{};  // the coroutine parked on it
   };
 
+  // The scheduler's turn, where it has one, while what is returned lives;
+  // and the turn let go of.
+  auto hold() const {
+    if constexpr (requires { scheduler_.hold(); })
+      return scheduler_.hold();
+    else
+      return 0;
+  }
+  auto release() const {
+    if constexpr (requires { scheduler_.release(); })
+      return scheduler_.release();
+    else
+      return 0;
+  }
+
+  // What XEP-0198 asked while the turn was let go of, done with it back.
+  void apply_acks() {
+    if (acked_h_)
+      acknowledged(*std::exchange(acked_h_, std::nullopt));
+    for (; acks_asked_ > 0; --acks_asked_)
+      if (sm_enabled_)
+        write_raw("<a xmlns='urn:xmpp:sm:3' h='" + std::to_string(inbound_) + "'/>");
+  }
+
   // The coroutine parked on a request, where there is one, to run again.
   void wake(slot& waiting) {
     if constexpr (concurrent)
@@ -2242,6 +2362,8 @@ class session {
   bool announced_ = false;
   bool acks_read_ = false;
   bool ended_ = false;
+  std::optional<std::uint32_t> acked_h_;
+  std::uint32_t acks_asked_ = 0;
   std::set<std::string> abandoned_;                    // requests whose coroutine is gone
   std::optional<typename Scheduler::handle> reader_;  // the coroutine that reads
   disco::info self_;
