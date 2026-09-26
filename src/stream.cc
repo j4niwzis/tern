@@ -1267,16 +1267,36 @@ struct refusal {
   std::string condition = "service-unavailable";
 };
 
-// How a request waits while another one reads the stream: suspend and let
-// the others run -- a coroutine's yield, or a wait on a condition with
-// threads. no_yield: only one request in flight at a time.
-struct no_yield {
-  void operator()() const noexcept {}
+// The caller's coroutines -- fibers, or threads -- as a session sees them:
+// the one running, parking it until it is woken, and waking one. A
+// request from a coroutine that is not the reader parks; the reader wakes
+// it with its answer. Nothing is erased: the scheduler is a type of the
+// session.
+template <class S>
+concept scheduler = std::equality_comparable<typename S::handle> && requires(S& s, typename S::handle h) {
+  { s.current() } -> std::convertible_to<typename S::handle>;
+  s.park();
+  s.wake(h);
+};
+
+// One coroutine: a request reads for itself.
+struct no_scheduler {
+  using handle = int;
 };
 
 }  // namespace tern
 
 namespace tern::detail {
+
+// Runs at the end of its scope, however it ends: returned from, or unwound
+// -- a coroutine killed where it waited included.
+template <class F>
+struct on_exit {
+  F run;
+  ~on_exit() { run(); }
+};
+template <class F>
+on_exit(F) -> on_exit<F>;
 
 // A transport's input read for chevron: bytes fed to a parser only as far as
 // the next event needs -- up to a '>' or a '<', where an event can end -- and
@@ -1297,6 +1317,7 @@ class source {
     parser_ = chevron::parser();
     finished_ = false;
     depth_ = 0;
+    piece_.clear();
   }
 
   // The stanza being read: its element and what says whose it is.
@@ -1342,7 +1363,8 @@ class source {
         // The end is asked about only where a byte is needed: over a socket,
         // asking is waiting for the peer, and after the '>' that ends a
         // stanza there may be nothing more for a long while.
-        std::string piece;
+        // What is taken is kept here, not on the stack: taking it may be cut
+        // short, and what was taken is not lost.
         bool ended = false;
         for (;;) {
           if (*at_ == *end_) {
@@ -1350,13 +1372,15 @@ class source {
             break;
           }
           const char unit = static_cast<char>(**at_);
+          piece_.push_back(unit);
           ++*at_;
-          piece.push_back(unit);
           if (unit == '>' || unit == '<')
             break;
         }
-        parser_.feed(piece);
-        if (ended && piece.empty()) {
+        const bool nothing = piece_.empty();
+        parser_.feed(piece_);
+        piece_.clear();
+        if (ended && nothing) {
           parser_.finish();
           finished_ = true;
         }
@@ -1397,6 +1421,7 @@ class source {
 
   std::size_t depth_ = 0;
   top current_;
+  std::string piece_;
   std::optional<iterator> at_;
   std::optional<sentinel> end_;
   chevron::parser parser_;
@@ -1478,8 +1503,8 @@ concept iq_request = detail::is_iq_get<Q>::value || detail::is_iq_set<Q>::value;
 
 // A stream that is authenticated and bound: stanzas in, stanzas out. T is the
 // transport, or a reference to the caller's; P the protocol; Handlers the
-// answering<> of incoming queries; Yield how a request waits.
-template <class T, class P = standard, class Handlers = answering<>, class Yield = no_yield>
+// answering<> of incoming queries; Scheduler the caller's coroutines.
+template <class T, class P = standard, class Handlers = answering<>, class Scheduler = no_scheduler>
 class session {
  public:
   using protocol_type = P;
@@ -1494,8 +1519,8 @@ class session {
   using request_error = basic_request_error<typename P::stanza_error>;
   using request_failure = basic_request_failure<typename P::stanza_error>;
 
-  session(T transport, Handlers handlers, Yield yield)
-      : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), yield_(std::move(yield)) {
+  session(T transport, Handlers handlers, Scheduler scheduler)
+      : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), scheduler_(std::move(scheduler)) {
     source_.start(transport_.input());
   }
 
@@ -1557,33 +1582,23 @@ class session {
   }
 
   // The next stanza, as it arrives; nothing where the stream has ended
-  // cleanly; or the error.
+  // cleanly; or the error. Whoever calls this is the reader: an answer to a
+  // request goes to it -- the coroutine parked on it woken -- a query to its
+  // handler, and the rest comes out here.
   std::expected<std::optional<stanza_t>, connect_error> try_receive() {
-    // What arrived while a request waited for its answer, first.
-    if (!pending_.empty())
-      return take_pending();
+    if constexpr (concurrent)
+      reader_ = scheduler_.current();
     for (;;) {
-      if (reading_) {
-        if constexpr (can_yield) {
-          yield_();
-          if (!pending_.empty())
-            return take_pending();
-          continue;
-        } else {
-          return std::unexpected(connect_error{connect_code::xml, "read while a request reads", std::nullopt});
-        }
+      if (!pending_.empty())
+        return take_pending();
+      if (failed_) {
+        if (ended_)
+          return std::optional<stanza_t>();
+        return std::unexpected(*failed_);
       }
-      auto one = read_locked();
-      if (!one) {
-        if (one.error().code == connect_code::malformed_stanza && settled(*one.error().malformed))
-          continue;
-        return one;
-      }
-      if (!*one)
-        return one;
-      if (claimed(**one) || dispatched(**one))
-        continue;
-      return one;
+      if (reading_)
+        return std::unexpected(connect_error{connect_code::xml, "read while another reads", std::nullopt});
+      read_and_route();
     }
   }
 
@@ -1596,58 +1611,42 @@ class session {
     return std::move(*one);
   }
 
+  // What a request comes to.
+  using outcome = std::expected<result, request_error>;
+
   // A get or a set sent, and its answer awaited: the result, or the error,
   // with the same id, from the address asked (RFC 6120, 8.2.3). Whatever else
   // arrives in the meantime is kept, and handed out by receive() and stanzas()
   // afterwards, in order. An id is made up where the request has none.
+  //
+  // With a scheduler, a request from a coroutine other than the reader --
+  // the one that connected, or last called receive() -- never reads: it
+  // parks, and the reader wakes it when its answer comes, or the stream is
+  // over. A coroutine killed while it is parked leaves nothing behind: its
+  // answer is dropped when it comes. Timeouts and giving up are the
+  // caller's; surviving them is the session's.
   template <iq_request Question>
-  std::expected<result, request_error> try_request(Question question) {
-    if (question.id.empty())
-      question.id = "tern-" + std::to_string(++last_id_);
-    const std::string id = question.id;
-    waiting_[id] = slot{question.to, std::nullopt};
-    send(question);
+  outcome try_request(Question question) {
+    const std::string id = start(std::move(question));
+    detail::on_exit forget{[this, &id] { abandon(id); }};
     for (;;) {
-      if (auto found = waiting_.find(id); found->second.answer) {
-        auto answer = std::move(*found->second.answer);
-        waiting_.erase(found);
-        if (auto* refused = std::get_if<error>(&answer))
-          return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(refused->reason)});
-        return std::get<result>(std::move(answer));
-      } else if (found->second.malformed) {
-        auto bad = std::move(*found->second.malformed);
-        waiting_.erase(found);
-        return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt, std::move(bad)});
-      }
-      if (failed_) {
-        waiting_.erase(id);
-        return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
-      }
-      // Another request is reading: its reading may bring this answer too.
-      if (reading_) {
-        if constexpr (can_yield) {
-          yield_();
+      if (auto done = finished(id))
+        return std::move(*done);
+      if constexpr (concurrent) {
+        if (!reader_ || !(*reader_ == scheduler_.current())) {
+          waiting_.at(id).waiter = scheduler_.current();
+          scheduler_.park();
           continue;
-        } else {
-          waiting_.erase(id);
-          return std::unexpected(request_error{
-              request_code::connection,
-              connect_error{connect_code::xml, "a second request in flight, and no yield", std::nullopt},
-              std::nullopt});
         }
       }
-      auto one = read_locked();
-      if (!one && one.error().code == connect_code::malformed_stanza) {
-        if (!settled(*one.error().malformed))
-          pending_.push_back(std::unexpected(one.error()));
-        continue;
-      }
-      if (!one || !*one) {
+      if (reading_) {
         waiting_.erase(id);
-        return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
+        return std::unexpected(request_error{
+            request_code::connection,
+            connect_error{connect_code::xml, "a request reading while another reads", std::nullopt},
+            std::nullopt});
       }
-      if (!claimed(**one) && !dispatched(**one))
-        pending_.push_back(std::move(**one));
+      read_and_route();
     }
   }
 
@@ -1658,24 +1657,7 @@ class session {
   // answers<> -- as the result arrives; void for an empty result.
   template <is_query Query>
   std::expected<typename Query::answer, request_error> try_request(asking<Query> question = {}) {
-    using carried = chevron::tagged<Query>;
-    using sent_type =
-        std::conditional_t<is_get_kind<typename Query::kind>, basic::iq_get<carried>, basic::iq_set<carried>>;
-    sent_type sent{.to = std::move(question.to), .lang = std::move(question.lang)};
-    sent.payload.emplace_back(std::move(question.query));
-    auto answer = try_request(std::move(sent));
-    if (!answer)
-      return std::unexpected(std::move(answer).error());
-    if constexpr (std::is_void_v<typename Query::answer>) {
-      return {};
-    } else {
-      static_assert(P::template answers_with<typename Query::answer>,
-                    "tern: the query's answer type is not among the protocol's answers<>");
-      if (!answer->payload.empty())
-        if (auto* typed = answer->payload.front().template get_if<typename Query::answer>())
-          return std::move(*typed);
-      return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt});
-    }
+    return typed<Query>(try_request(sent_for(std::move(question))));
   }
 
   // The same, throwing: the answer, or a tern::request_failure.
@@ -1844,6 +1826,11 @@ class session {
   void bound_to(std::string jid) { jid_ = std::move(jid); }
   void versions_rosters(bool on) { roster_versioning_ = on; }
   void deliver_unhandled(bool deliver) { deliver_unhandled_ = deliver; }
+  // The coroutine that connects reads, until another calls receive().
+  void adopt_reader() {
+    if constexpr (concurrent)
+      reader_ = scheduler_.current();
+  }
   void describes_itself(const options& how) {
     self_ = how.self;
     for (std::string_view var : {disco::info_namespace, caps::caps_namespace, std::string_view("urn:xmpp:ping")})
@@ -1871,7 +1858,7 @@ class session {
   }
 
  private:
-  static constexpr bool can_yield = !std::same_as<Yield, no_yield>;
+  static constexpr bool concurrent = scheduler<Scheduler>;
 
   void write_raw(std::string_view text) {
     transport_.write(text);
@@ -1906,6 +1893,89 @@ class session {
     }
   }
 
+  // A request sent, and its slot made: its id.
+  template <iq_request Question>
+  std::string start(Question question) {
+    if (question.id.empty())
+      question.id = "tern-" + std::to_string(++last_id_);
+    std::string id = question.id;
+    waiting_[id] = slot{question.to, std::nullopt};
+    send(question);
+    return id;
+  }
+
+  // A request given up: its slot freed, its answer to be dropped.
+  void abandon(const std::string& id) {
+    if (waiting_.erase(id) > 0)
+      abandoned_.insert(id);
+  }
+
+  // What the request came to, where it has come to something; its slot
+  // freed then.
+  std::optional<outcome> finished(const std::string& id) {
+    const auto found = waiting_.find(id);
+    if (found == waiting_.end())
+      return std::nullopt;
+    if (found->second.answer) {
+      auto answer = std::move(*found->second.answer);
+      waiting_.erase(found);
+      if (auto* refused = std::get_if<error>(&answer))
+        return outcome(std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(refused->reason)}));
+      return outcome(std::get<result>(std::move(answer)));
+    }
+    if (found->second.malformed) {
+      auto bad = std::move(*found->second.malformed);
+      waiting_.erase(found);
+      return outcome(std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt, std::move(bad)}));
+    }
+    if (failed_) {
+      waiting_.erase(found);
+      return outcome(std::unexpected(request_error{request_code::connection, *failed_, std::nullopt}));
+    }
+    return std::nullopt;
+  }
+
+  // A query's iq.
+  template <is_query Query>
+  static auto sent_for(asking<Query> question) {
+    using carried = chevron::tagged<Query>;
+    using sent_type =
+        std::conditional_t<is_get_kind<typename Query::kind>, basic::iq_get<carried>, basic::iq_set<carried>>;
+    sent_type sent{.to = std::move(question.to), .lang = std::move(question.lang)};
+    sent.payload.emplace_back(std::move(question.query));
+    return sent;
+  }
+
+  // A result as the query's answer, read straight into its type.
+  template <class Query>
+  static std::expected<typename Query::answer, request_error> typed(outcome answer) {
+    if (!answer)
+      return std::unexpected(std::move(answer).error());
+    if constexpr (std::is_void_v<typename Query::answer>) {
+      return {};
+    } else {
+      static_assert(P::template answers_with<typename Query::answer>,
+                    "tern: the query's answer type is not among the protocol's answers<>");
+      if (!answer->payload.empty())
+        if (auto* got = answer->payload.front().template get_if<typename Query::answer>())
+          return std::move(*got);
+      return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt});
+    }
+  }
+
+  // One stanza read and sent where it goes: an answer to its request, a
+  // query to its handler, the rest kept to hand out.
+  void read_and_route() {
+    auto one = read_locked();
+    if (!one) {
+      if (one.error().code == connect_code::malformed_stanza && !settled(*one.error().malformed))
+        pending_.push_back(std::unexpected(one.error()));
+    } else if (*one) {
+      if (!claimed(**one) && !dispatched(**one))
+        pending_.push_back(std::move(**one));
+    }
+  }
+
   std::expected<std::optional<stanza_t>, connect_error> take_pending() {
     auto one = std::move(pending_.front());
     pending_.pop_front();
@@ -1924,11 +1994,14 @@ class session {
       return false;
     if (bad.type == "result" || bad.type == "error") {
       const auto found = waiting_.find(bad.id);
-      if (found == waiting_.end() || found->second.answer || found->second.malformed)
+      if (found == waiting_.end())
+        return abandoned_.erase(bad.id) > 0;  // its request is gone: dropped
+      if (found->second.answer || found->second.malformed)
         return false;
       if (found->second.to && bad.from != found->second.to)
         return false;
       found->second.malformed = bad;
+      wake(found->second);
       return true;
     }
     if (bad.type == "get" || bad.type == "set")
@@ -1951,12 +2024,18 @@ class session {
   // One reader at a time; a failure is everyone's.
   std::expected<std::optional<stanza_t>, connect_error> read_locked() {
     reading_ = true;
+    detail::on_exit release{[this] { reading_ = false; }};
     auto one = read_stanza();
-    reading_ = false;
-    if (!one && one.error().code != connect_code::malformed_stanza)
+    if (!one && one.error().code != connect_code::malformed_stanza) {
       failed_ = one.error();
-    else if (!*one)
+    } else if (one && !*one) {
       failed_ = connect_error{connect_code::closed, "", std::nullopt};
+      ended_ = true;
+    }
+    // The stream over: every coroutine parked on a request hears it.
+    if (failed_)
+      for (auto& entry : waiting_)
+        wake(entry.second);
     return one;
   }
 
@@ -2048,11 +2127,14 @@ class session {
           using type = std::remove_cvref_t<decltype(answer)>;
           if constexpr (std::same_as<type, result> || std::same_as<type, error>) {
             const auto found = waiting_.find(answer.id);
-            if (found == waiting_.end() || found->second.answer)
+            if (found == waiting_.end())
+              return abandoned_.erase(answer.id) > 0;  // its request is gone: dropped
+            if (found->second.answer || found->second.malformed)
               return false;
             if (found->second.to && answer.from != found->second.to)
               return false;
             found->second.answer.emplace(std::move(answer));
+            wake(found->second);
             return true;
           } else {
             return false;
@@ -2131,7 +2213,7 @@ class session {
 
   T transport_;
   Handlers handlers_;
-  Yield yield_;
+  Scheduler scheduler_;
   detail::source<std::remove_reference_t<decltype(std::declval<transport_type&>().input())>> source_;
   std::string out_;
   std::string jid_;
@@ -2144,13 +2226,24 @@ class session {
     std::optional<std::string> to;
     std::optional<std::variant<result, error>> answer;
     std::optional<malformed_stanza> malformed{};
+    std::optional<typename Scheduler::handle> waiter{};  // the coroutine parked on it
   };
+
+  // The coroutine parked on a request, where there is one, to run again.
+  void wake(slot& waiting) {
+    if constexpr (concurrent)
+      if (waiting.waiter)
+        scheduler_.wake(*std::exchange(waiting.waiter, std::nullopt));
+  }
   std::map<std::string, slot> waiting_;
   bool reading_ = false;
   std::optional<connect_error> failed_;
   bool deliver_unhandled_ = false;
   bool announced_ = false;
   bool acks_read_ = false;
+  bool ended_ = false;
+  std::set<std::string> abandoned_;                    // requests whose coroutine is gone
+  std::optional<typename Scheduler::handle> reader_;  // the coroutine that reads
   disco::info self_;
   std::string caps_node_;
   bool sm_enabled_ = false;
@@ -2160,8 +2253,8 @@ class session {
   std::deque<std::string> unacked_;
 };
 
-template <class T, class P, class Handlers, class Yield>
-class session<T, P, Handlers, Yield>::stanza_view : public std::ranges::view_interface<stanza_view> {
+template <class T, class P, class Handlers, class Scheduler>
+class session<T, P, Handlers, Scheduler>::stanza_view : public std::ranges::view_interface<stanza_view> {
  public:
   class iterator {
    public:
@@ -2487,6 +2580,7 @@ std::expected<Session, connect_error> establish(Session s, const options& how, c
   s.versions_rosters(steps.roster_versioning);
   s.deliver_unhandled(how.deliver_unhandled);
   s.describes_itself(how);
+  s.adopt_reader();
   if (resume)
     s.resumed_from(*resume, steps.resumed_h);
   else if (steps.enabled)
@@ -2503,19 +2597,19 @@ export namespace tern {
 // SCRAM (-PLUS where it gives channel binding) or PLAIN, and resource
 // binding. P, given first, is the protocol:
 //   auto s = tern::connect<my_protocol>(socket, how, tern::answering{...});
-template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
-std::expected<session<T&, P, Handlers, Yield>, connect_error>
-try_connect(T& transport, const options& how, Handlers handlers = {}, Yield yield = {}) {
-  return detail::establish(session<T&, P, Handlers, Yield>(transport, std::move(handlers), std::move(yield)), how);
+template <class P = standard, transport T, class Handlers = answering<>, class Scheduler = no_scheduler>
+std::expected<session<T&, P, Handlers, Scheduler>, connect_error>
+try_connect(T& transport, const options& how, Handlers handlers = {}, Scheduler scheduler = {}) {
+  return detail::establish(session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler)), how);
 }
 
 // XEP-0198: a stream taken up again over a new transport, from what
 // session.sm() gave: authenticated, then resumed instead of bound, and what
 // the server had not acknowledged sent again.
-template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
-std::expected<session<T&, P, Handlers, Yield>, connect_error>
-try_resume(T& transport, const options& how, const sm_state& state, Handlers handlers = {}, Yield yield = {}) {
-  return detail::establish(session<T&, P, Handlers, Yield>(transport, std::move(handlers), std::move(yield)), how,
+template <class P = standard, transport T, class Handlers = answering<>, class Scheduler = no_scheduler>
+std::expected<session<T&, P, Handlers, Scheduler>, connect_error>
+try_resume(T& transport, const options& how, const sm_state& state, Handlers handlers = {}, Scheduler scheduler = {}) {
+  return detail::establish(session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler)), how,
                            &state);
 }
 
@@ -2523,30 +2617,30 @@ try_resume(T& transport, const options& how, const sm_state& state, Handlers han
 // needs, and an output iterator of char: no TLS. The range has to outlive
 // the session.
 template <class P = standard, std::ranges::input_range Input, std::output_iterator<char> Out,
-          class Handlers = answering<>, class Yield = no_yield>
-std::expected<session<range_transport<Input, Out>, P, Handlers, Yield>, connect_error>
-try_connect(Input& input, Out output, const options& how, Handlers handlers = {}, Yield yield = {}) {
-  return detail::establish(session<range_transport<Input, Out>, P, Handlers, Yield>(
+          class Handlers = answering<>, class Scheduler = no_scheduler>
+std::expected<session<range_transport<Input, Out>, P, Handlers, Scheduler>, connect_error>
+try_connect(Input& input, Out output, const options& how, Handlers handlers = {}, Scheduler scheduler = {}) {
+  return detail::establish(session<range_transport<Input, Out>, P, Handlers, Scheduler>(
                                range_transport<Input, Out>(input, std::move(output)), std::move(handlers),
-                               std::move(yield)),
+                               std::move(scheduler)),
                            how);
 }
 
 // The same, throwing: the session, or a tern::connect_failure.
-template <class P = standard, transport T, class Handlers = answering<>, class Yield = no_yield>
-session<T&, P, Handlers, Yield> connect(T& transport, const options& how, Handlers handlers = {},
-                                        Yield yield = {}) {
-  auto made = try_connect<P>(transport, how, std::move(handlers), std::move(yield));
+template <class P = standard, transport T, class Handlers = answering<>, class Scheduler = no_scheduler>
+session<T&, P, Handlers, Scheduler> connect(T& transport, const options& how, Handlers handlers = {},
+                                        Scheduler scheduler = {}) {
+  auto made = try_connect<P>(transport, how, std::move(handlers), std::move(scheduler));
   if (!made)
     throw connect_failure(std::move(made).error());
   return std::move(*made);
 }
 
 template <class P = standard, std::ranges::input_range Input, std::output_iterator<char> Out,
-          class Handlers = answering<>, class Yield = no_yield>
-session<range_transport<Input, Out>, P, Handlers, Yield> connect(Input& input, Out output, const options& how,
-                                                                 Handlers handlers = {}, Yield yield = {}) {
-  auto made = try_connect<P>(input, std::move(output), how, std::move(handlers), std::move(yield));
+          class Handlers = answering<>, class Scheduler = no_scheduler>
+session<range_transport<Input, Out>, P, Handlers, Scheduler> connect(Input& input, Out output, const options& how,
+                                                                 Handlers handlers = {}, Scheduler scheduler = {}) {
+  auto made = try_connect<P>(input, std::move(output), how, std::move(handlers), std::move(scheduler));
   if (!made)
     throw connect_failure(std::move(made).error());
   return std::move(*made);

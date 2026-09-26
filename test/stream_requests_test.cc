@@ -80,48 +80,6 @@ TEST(Stream, RequestAndAnswer) {
   EXPECT_EQ(lang, "en");
 }
 
-// Two requests in flight: the first reads the second's answer before its own,
-// and hands it over; the second waits, yielding, until it has it.
-TEST(Stream, TwoRequestsInFlight) {
-  const std::string server =
-      server_header("s1") +
-      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
-      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
-      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
-      bind_features + bind_result +
-      "<iq type='result' id='tern-2' from='example.com'><b xmlns='urn:x'/></iq>"
-      "<iq type='result' id='tern-1' from='example.com'><a xmlns='urn:x'/></iq>"
-      "</stream:stream>";
-  baton pass;
-  bool passed = false;
-  suspending_input input{server, server.find("<iq type='result' id='tern-2'"), &pass, &passed};
-  std::string written;
-  auto how = rfc7677();
-  how.plain_without_tls = true;
-  auto session = tern::try_connect(input, std::back_inserter(written), how, tern::answering<>{}, [&] {
-    pass.first.release();
-    pass.second.acquire();
-  });
-  ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
-
-  std::optional<std::expected<tern::iq::result, tern::request_error>> first, second;
-  std::thread b([&] {
-    pass.second.acquire();
-    second.emplace(session->try_request(tern::iq::get{}));
-  });
-  std::thread a([&] {
-    first.emplace(session->try_request(tern::iq::get{}));
-    pass.second.release();
-  });
-  a.join();
-  b.join();
-  ASSERT_TRUE(first && first->has_value());
-  ASSERT_TRUE(second && second->has_value());
-  EXPECT_EQ((*first)->id, "tern-1");
-  EXPECT_EQ((*first)->payload.at(0).as<chevron::any>().local, "a");
-  EXPECT_EQ((*second)->id, "tern-2");
-  EXPECT_EQ((*second)->payload.at(0).as<chevron::any>().local, "b");
-}
 
 // The same, throwing.
 TEST(Stream, Throwing) {

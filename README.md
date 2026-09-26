@@ -127,10 +127,16 @@ error, thrown as a `tern::request_failure` (or handed back by `try_request`)
 with the `<error/>` kept. Whatever else arrives in the meantime is kept for
 `receive()` and `stanzas()`, in order.
 
-Several requests may be in flight at once, from coroutines or threads: each
-answer goes to the request it belongs to, read into its type by whichever
-reads the stream, and the others wait in the session's `Yield`, a template
-parameter given to `connect` (`tern::no_yield`, the default, allows one).
+Several requests may be in flight at once, from coroutines of any kind --
+fibers, or threads taking turns. One coroutine reads: the one that connected,
+or whoever last called `receive()` or `stanzas()`. A request from any other
+never reads: it parks, and the reader wakes it with its answer, typed, or
+with the error where the stream ends. The coroutines are the caller's; the
+session sees them through a scheduler, a type with three operations --
+`current()`, `park()`, `wake(handle)` -- given to `connect`
+(`tern::no_scheduler`, the default: one coroutine, whose requests read for
+themselves). A coroutine killed while it is parked leaves nothing behind: its
+answer is dropped when it comes. Timeouts and giving up are the caller's.
 
 Requests coming in are answered by handlers given at `connect`, a static
 pack -- no map, no type erasure:
