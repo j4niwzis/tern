@@ -822,6 +822,15 @@ enum class connect_code : std::uint8_t {
   authentication,    // SCRAM went wrong: see sasl
   bind_refused,      // the server refused the resource
   tls_failed,        // the transport could not start TLS
+  malformed_stanza,  // a stanza did not fit its type: passed over, and the stream goes on
+};
+
+// A stanza that could not be read into its type: what it was, whose, and
+// why. The stream goes on after it.
+struct malformed_stanza {
+  std::string element, type, id;
+  std::optional<std::string> from;
+  chevron::read_error why;
 };
 
 struct connect_error {
@@ -836,6 +845,8 @@ struct connect_error {
   // the condition (conflict, not-allowed, resource-constraint), the type and
   // any text -- whole.
   std::optional<stanza_error> stanza{};
+  // With malformed_stanza: the stanza, which the stream has gone on after.
+  std::optional<malformed_stanza> malformed{};
 };
 
 // What the TLS layer gives for channel binding: the type and its data.
@@ -957,11 +968,35 @@ class source {
     end_.emplace(std::ranges::end(range));
     parser_ = chevron::parser();
     finished_ = false;
+    depth_ = 0;
+  }
+
+  // The stanza being read: its element and what says whose it is.
+  struct top {
+    std::string element, type, id;
+    std::optional<std::string> from;
+  };
+  const top& current() const noexcept { return current_; }
+  std::size_t depth() const noexcept { return depth_; }
+
+  // After a stanza that could not be read: the rest of it passed over, back
+  // to the stream's level.
+  std::expected<void, chevron::error> skip_to_stream_level() {
+    while (depth_ > 1) {
+      auto one = next();
+      if (!one)
+        return std::unexpected(one.error());
+      if (!*one)
+        return {};
+    }
+    return {};
   }
 
   std::expected<std::optional<chevron::event>, chevron::error> next() {
     for (;;) {
       auto one = parser_.next();
+      if (one && *one)
+        track(**one);
       if (!one || *one)
         return one;
       if (finished_)
@@ -1008,9 +1043,32 @@ class source {
     parser_ = chevron::parser();
     parser_.feed(rest);
     finished_ = false;
+    depth_ = 0;
   }
 
  private:
+  void track(const chevron::event& one) {
+    if (const auto* start = std::get_if<chevron::start_element>(&one)) {
+      if (++depth_ == 2) {
+        current_ = top{std::string(start->name.local), {}, {}, std::nullopt};
+        for (const auto& attribute : start->attributes) {
+          if (!attribute.name.uri.empty())
+            continue;
+          if (attribute.name.local == "type")
+            current_.type = std::string(attribute.value);
+          else if (attribute.name.local == "id")
+            current_.id = std::string(attribute.value);
+          else if (attribute.name.local == "from")
+            current_.from = std::string(attribute.value);
+        }
+      }
+    } else if (std::holds_alternative<chevron::end_element>(one) && depth_ > 0) {
+      --depth_;
+    }
+  }
+
+  std::size_t depth_ = 0;
+  top current_;
   std::optional<iterator> at_;
   std::optional<sentinel> end_;
   chevron::parser parser_;
@@ -1043,6 +1101,8 @@ struct basic_request_error {
   request_code code;
   std::optional<connect_error> connection;
   std::optional<E> reply;
+  // With bad_answer: the answer that did not fit its type, where it did not.
+  std::optional<malformed_stanza> malformed{};
 };
 using request_error = basic_request_error<stanza_error>;
 
@@ -1135,7 +1195,12 @@ class session {
         }
       }
       auto one = read_locked();
-      if (!one || !*one)
+      if (!one) {
+        if (one.error().code == connect_code::malformed_stanza && settled(*one.error().malformed))
+          continue;
+        return one;
+      }
+      if (!*one)
         return one;
       if (claimed(**one) || dispatched(**one))
         continue;
@@ -1170,6 +1235,10 @@ class session {
         if (auto* refused = std::get_if<error>(&answer))
           return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(refused->reason)});
         return std::get<result>(std::move(answer));
+      } else if (found->second.malformed) {
+        auto bad = std::move(*found->second.malformed);
+        waiting_.erase(found);
+        return std::unexpected(request_error{request_code::bad_answer, std::nullopt, std::nullopt, std::move(bad)});
       }
       if (failed_) {
         waiting_.erase(id);
@@ -1189,6 +1258,11 @@ class session {
         }
       }
       auto one = read_locked();
+      if (!one && one.error().code == connect_code::malformed_stanza) {
+        if (!settled(*one.error().malformed))
+          pending_.push_back(std::unexpected(one.error()));
+        continue;
+      }
       if (!one || !*one) {
         waiting_.erase(id);
         return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
@@ -1366,9 +1440,36 @@ class session {
   static constexpr bool can_yield = !std::same_as<Yield, no_yield>;
 
   std::expected<std::optional<stanza_t>, connect_error> take_pending() {
-    stanza_t one = std::move(pending_.front());
+    auto one = std::move(pending_.front());
     pending_.pop_front();
-    return std::optional<stanza_t>(std::move(one));
+    if (!one)
+      return std::unexpected(std::move(one).error());
+    return std::optional<stanza_t>(std::move(*one));
+  }
+
+  // A stanza that could not be read, where it belongs: an answer to the
+  // request it answers -- by id, from the address asked -- and a request
+  // refused with bad-request, as every request gets a reply (RFC 6120,
+  // 8.2.3). True where it has been given to a request; otherwise it is the
+  // caller's to hear of.
+  bool settled(const malformed_stanza& bad) {
+    if (bad.element != "iq")
+      return false;
+    if (bad.type == "result" || bad.type == "error") {
+      const auto found = waiting_.find(bad.id);
+      if (found == waiting_.end() || found->second.answer || found->second.malformed)
+        return false;
+      if (found->second.to && bad.from != found->second.to)
+        return false;
+      found->second.malformed = bad;
+      return true;
+    }
+    if (bad.type == "get" || bad.type == "set")
+      send(basic::iq_error<chevron::tagged<chevron::any>>{
+          .to = bad.from,
+          .id = bad.id,
+          .reason = stanza_error{.type = error_types::modify{}, .what = stanza_condition_t(conditions::bad_request{})}});
+    return false;
   }
 
   template <class Presence>
@@ -1385,7 +1486,7 @@ class session {
     reading_ = true;
     auto one = read_stanza();
     reading_ = false;
-    if (!one)
+    if (!one && one.error().code != connect_code::malformed_stanza)
       failed_ = one.error();
     else if (!*one)
       failed_ = connect_error{connect_code::closed, "", std::nullopt};
@@ -1521,7 +1622,16 @@ class session {
     if (failure.code == chevron::read_code::incomplete ||
         (failure.parse_error && failure.parse_error->code == chevron::error_code::unexpected_end))
       return std::unexpected(connect_error{connect_code::closed, "", std::nullopt});
-    return std::unexpected(connect_error{connect_code::xml, failure.where, std::nullopt});
+    // XML that is not well-formed ends the stream; a stanza that is, but does
+    // not fit its type, is passed over, and the stream goes on.
+    if (failure.parse_error || source_.depth() < 2)
+      return std::unexpected(connect_error{connect_code::xml, failure.where, std::nullopt});
+    const auto stanza = source_.current();
+    if (auto skipped = source_.skip_to_stream_level(); !skipped)
+      return std::unexpected(connect_error{connect_code::xml, failure.where, std::nullopt});
+    return std::unexpected(
+        connect_error{connect_code::malformed_stanza, failure.where, std::nullopt, std::nullopt, std::nullopt,
+                      malformed_stanza{stanza.element, stanza.type, stanza.id, stanza.from, failure}});
   }
 
   T transport_;
@@ -1531,13 +1641,14 @@ class session {
   std::string out_;
   std::string jid_;
   bool roster_versioning_ = false;
-  std::deque<stanza_t> pending_;
+  std::deque<std::expected<stanza_t, connect_error>> pending_;
   std::size_t last_id_ = 0;
   // The requests in flight, by id: whom the answer must come from, and the
   // answer once somebody has read it.
   struct slot {
     std::optional<std::string> to;
     std::optional<std::variant<result, error>> answer;
+    std::optional<malformed_stanza> malformed{};
   };
   std::map<std::string, slot> waiting_;
   bool reading_ = false;
@@ -1584,8 +1695,9 @@ class session<T, P, Handlers, Yield>::stanza_view : public std::ranges::view_int
     }
     auto next = session_->try_receive();
     if (!next) {
+      // A stanza passed over is reported, and the stanzas go on.
+      failed_ = next.error().code != connect_code::malformed_stanza;
       current_.emplace(std::unexpected(next.error()));
-      failed_ = true;
     } else if (*next) {
       current_.emplace(std::move(**next));
     } else {
