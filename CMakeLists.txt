@@ -23,7 +23,7 @@ endif()
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG ae282d036df95362af7707c46c40dcd8047f6404
+  GIT_TAG 6d61b5c1f2d4da23b6db208c84e31f18414d804f
   LICENSE AGPL-3.0-only
   SYSTEM NEVER
   TARGETS chevron)
@@ -32,12 +32,14 @@ cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 998a915e2edb45e883f0a497b5fbae54d5406620
+  GIT_TAG 583c3a85adfecf60e68dccd2742e7ad97e667645
   LICENSE AGPL-3.0-only
   SYSTEM NEVER
-  TARGETS alef_precis)
+  TARGETS alef)
 cme_options(alef "ALEF_TESTS OFF")
-cme_find_package(alef REQUIRED)
+# Of alef, what a JID needs: PRECIS for its parts and IDNA for its domain,
+# with what they import -- not alef's segmentation, collation or confusables.
+cme_find_package(alef COMPONENTS precis idna REQUIRED)
 
 set(TERN_CONSTEXPR_STEPS 100000000 CACHE STRING
   "clang's -fconstexpr-steps for tern and what imports it")
@@ -46,31 +48,24 @@ set(TERN_CONSTEXPR_STEPS 100000000 CACHE STRING
 # module, as in alef and chevron: besides giving constant evaluation room, it
 # makes the modules' settings differ from those of the std target, so that
 # they, their consumers and the googletest those consume share one std.
-function(tern_module target file)
-  add_library(${target})
-  target_sources(${target}
-    PUBLIC FILE_SET CXX_MODULES BASE_DIRS src FILES ${file})
-  target_compile_features(${target} PUBLIC cxx_std_26)
-  if(ARGN)
-    target_link_libraries(${target} PUBLIC ${ARGN})
-  endif()
-  target_compile_options(${target} PUBLIC
-    $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fconstexpr-steps=${TERN_CONSTEXPR_STEPS}>)
-endfunction()
+# One library, libtern.a, with its modules in one file set: modules are what
+# separates it, and archives did not need to as well. Every part of it is
+# what a session needs -- SASL's crypto, JIDs, the stream, SRV -- so it has
+# no components.
+add_library(tern)
+target_sources(tern PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
+  FILES src/crypto.cc src/sasl.cc src/jid.cc src/stream.cc src/srv.cc src/tern.cc)
+target_compile_features(tern PUBLIC cxx_std_26)
+target_link_libraries(tern PUBLIC alef chevron Boost::pfr)
+target_compile_options(tern PUBLIC
+  $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fconstexpr-steps=${TERN_CONSTEXPR_STEPS}>)
 
-tern_module(tern_crypto src/crypto.cc)
-tern_module(tern_sasl src/sasl.cc tern_crypto)
-tern_module(tern_jid src/jid.cc alef_utf alef_precis alef_idna)
-tern_module(tern_stream src/stream.cc tern_crypto tern_sasl tern_jid chevron Boost::pfr)
-tern_module(tern_srv src/srv.cc)
-tern_module(tern src/tern.cc tern_crypto tern_sasl tern_stream tern_jid tern_srv)
-
-add_library(tern::crypto ALIAS tern_crypto)
-add_library(tern::sasl ALIAS tern_sasl)
-add_library(tern::stream ALIAS tern_stream)
-add_library(tern::jid ALIAS tern_jid)
-add_library(tern::srv ALIAS tern_srv)
+# The names the targets used to have, each the one library now.
 add_library(tern::tern ALIAS tern)
+foreach(name IN ITEMS crypto sasl stream jid srv)
+  add_library(tern::${name} ALIAS tern)
+  add_library(tern_${name} ALIAS tern)
+endforeach()
 
 if(TERN_TESTS)
   enable_testing()
