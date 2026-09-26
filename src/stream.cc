@@ -149,11 +149,19 @@ using stream_condition_t = chevron::tagged<
     stream_conditions::unsupported_feature, stream_conditions::unsupported_stanza_type,
     stream_conditions::unsupported_version>;
 
-// The name of the condition a tagged holds.
+// The names of a tagged's conditions, in order; the name of the one it holds
+// read by its index.
+template <class Tagged>
+struct condition_names;
+template <class... C>
+struct condition_names<chevron::tagged<C...>> {
+  static constexpr std::array<std::string_view, sizeof...(C)> names{
+      std::string_view(xml_schema(chevron::type<C>{}).local)...};
+};
+
 template <class Tagged>
 constexpr std::string_view condition_name(const Tagged& held) {
-  return std::visit([]<class C>(const C&) { return std::string_view(xml_schema(chevron::type<C>{}).local); },
-                    held.data());
+  return condition_names<Tagged>::names[held.data().index()];
 }
 
 // The condition of that name, where one of Tagged's has it.
@@ -1442,14 +1450,11 @@ class session {
                 }
             }
             if (!question.payload.empty()) {
-              const bool taken = std::visit(
-                  [&]<class Query>(const Query& query) {
-                    if constexpr (std::same_as<Query, chevron::any>)
-                      return false;
-                    else
-                      return handled(question, query);
-                  },
-                  question.payload.front().data());
+              bool taken = false;
+              std::as_const(question.payload.front()).with([&]<class Query>(const Query& query) {
+                if constexpr (!std::same_as<Query, chevron::any>)
+                  taken = handled(question, query);
+              });
               if (taken)
                 return true;
             }
