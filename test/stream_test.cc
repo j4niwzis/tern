@@ -2,6 +2,7 @@
 // byte, what it reads, and how far it reads.
 import std;
 import tern;
+import chevron;
 import gtest;
 
 #include "gtest/gtest-macros.h"
@@ -138,4 +139,78 @@ TEST(Stream, WhatStopsIt) {
   EXPECT_EQ(code(liar, rfc7677()), connect_code::authentication);  // the server did not prove itself
 
   EXPECT_EQ(code(server_header("s1"), rfc7677()), connect_code::xml);  // the input ended before the features
+}
+
+namespace {
+
+struct ping {};
+constexpr auto xml_schema(chevron::type<ping>) {
+  return chevron::schema<ping>().name("urn:xmpp:ping", "ping");
+}
+
+struct version {
+  std::optional<std::string> name, version;
+};
+constexpr auto xml_schema(chevron::type<version>) {
+  return chevron::schema<version>().name("jabber:iq:version", "query");
+}
+
+struct version_query {};
+constexpr auto xml_schema(chevron::type<version_query>) {
+  return chevron::schema<version_query>().name("jabber:iq:version", "query");
+}
+
+}  // namespace
+
+// A request waits for its answer; what arrives meanwhile is kept for later.
+TEST(Stream, RequestAndAnswer) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result +
+      "<message from='romeo@example.net' xml:lang='en'><body>before</body></message>"
+      "<iq type='result' id='other' from='example.com'/>"
+      "<iq type='result' id='tern-1' from='example.com'/>"
+      "<presence from='romeo@example.net'/>"
+      "<iq type='result' id='tern-2' from='example.com'>"
+      "<query xmlns='jabber:iq:version'><name>server</name><version>1.0</version></query></iq>"
+      "<iq type='error' id='tern-3' from='example.com'><error type='cancel'>"
+      "<feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
+
+  written.clear();
+  const auto pong = session->request(tern::iq{.type = "get", .payload = {chevron::to_any(ping{})}});
+  ASSERT_TRUE(pong.has_value());
+  EXPECT_EQ(pong->id, "tern-1");
+  EXPECT_EQ(written, "<iq xmlns=\"jabber:client\" id=\"tern-1\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>");
+
+  const auto server_version = session->request<version>(tern::get, version_query{});
+  ASSERT_TRUE(server_version.has_value());
+  EXPECT_EQ(server_version->name, "server");
+  EXPECT_EQ(server_version->version, "1.0");
+
+  const auto refused = session->request<version>(tern::get, version_query{});
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code, tern::request_code::error_reply);
+  ASSERT_TRUE(refused.error().reply.has_value());
+  EXPECT_EQ(refused.error().reply->type, "error");
+
+  // What arrived meanwhile, in order.
+  std::vector<std::size_t> kinds;
+  std::optional<std::string> lang;
+  for (auto&& one : session->stanzas()) {
+    ASSERT_TRUE(one.has_value());
+    kinds.push_back(one->index());
+    if (const auto* m = std::get_if<tern::message>(&*one)) lang = m->lang;
+  }
+  EXPECT_EQ(kinds, (std::vector<std::size_t>{0, 2, 1}));  // message, the other iq, presence
+  EXPECT_EQ(lang, "en");
 }
