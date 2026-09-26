@@ -98,6 +98,13 @@ auto session = tern::connect<my_protocol>(wire, how);
 my_protocol::message::chat …;  // the stanza types, over the protocol
 ```
 
+A fifth parameter says what becomes of an element no listed type names:
+`tern::keep_unknown`, the default, keeps it as a `chevron::any`;
+`tern::drop_unknown` passes over it, and then no tree is ever made. A
+fourth, `tern::errors<…>`, names the application-specific error conditions
+(RFC 6120, 8.3.2) read into the `<error/>`'s `application`; one not named is
+passed over.
+
 The stanzas are `tern::basic::message_chat<X>` and the like; a protocol's
 `message::chat` is one over its extensions. `tern::standard`, the default,
 names what RFC 6120 and 6121 need and what every client is asked: the roster

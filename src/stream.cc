@@ -554,7 +554,33 @@ struct extensions {};
 template <class... T>
 struct errors {};
 
+// What a session does with an element no type of its protocol names: keeps
+// it as it came, a chevron::any -- the one tree there is -- or passes over
+// it, so that no tree is ever made.
+struct keep_unknown {};
+struct drop_unknown {};
+
 namespace detail {
+// A type no element is read into: the one alternative of a payload whose
+// protocol names nothing there and drops the unknown.
+struct nothing {};
+constexpr auto xml_schema(chevron::type<nothing>) { return chevron::schema<nothing>().name("urn:tern:nothing", ""); }
+
+template <class Unknown, class... T>
+struct payload_of;
+template <class... T>
+struct payload_of<keep_unknown, T...> {
+  using type = chevron::tagged<T..., chevron::any>;
+};
+template <class... T>
+struct payload_of<drop_unknown, T...> {
+  using type = chevron::tagged<T...>;
+};
+template <>
+struct payload_of<drop_unknown> {
+  using type = chevron::tagged<nothing>;
+};
+
 template <class... R>
 struct application_of {
   using type = chevron::tagged<R...>;
@@ -566,15 +592,17 @@ struct application_of<> {
 }  // namespace detail
 
 template <class Queries = queries<>, class Answers = answers<>, class Extensions = extensions<>,
-          class Errors = errors<>>
+          class Errors = errors<>, class Unknown = keep_unknown>
 struct protocol;
 
-template <class... Q, class... A, class... E, class... R>
-struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>> {
-  using query_payload = chevron::tagged<Q..., chevron::any>;
-  using answer_payload = chevron::tagged<A..., chevron::any>;
-  using extension = chevron::tagged<E..., chevron::any>;
-  using error_payload = chevron::tagged<chevron::any>;
+template <class... Q, class... A, class... E, class... R, class Unknown>
+struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>, Unknown> {
+  static_assert(std::same_as<Unknown, keep_unknown> || std::same_as<Unknown, drop_unknown>,
+                "tern: a protocol's last parameter is tern::keep_unknown or tern::drop_unknown");
+  using query_payload = typename detail::payload_of<Unknown, Q...>::type;
+  using answer_payload = typename detail::payload_of<Unknown, A...>::type;
+  using extension = typename detail::payload_of<Unknown, E...>::type;
+  using error_payload = typename detail::payload_of<Unknown>::type;
   using stanza_error = basic::stanza_error<typename detail::application_of<R...>::type>;
 
   struct message {

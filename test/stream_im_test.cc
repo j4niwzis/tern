@@ -213,3 +213,35 @@ TEST(Stream, SubjectAndThread) {
   EXPECT_EQ(again->thread->parent, read->thread->parent);
   EXPECT_EQ(again->subject, read->subject);
 }
+
+namespace {
+using dropping = tern::protocol<tern::queries<tern::roster>, tern::answers<tern::roster>, tern::extensions<>,
+                                tern::errors<>, tern::drop_unknown>;
+}  // namespace
+
+// With drop_unknown, what no type of the protocol names is passed over: no
+// tree is made, in an answer or in a message.
+TEST(Stream, DropUnknown) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") + bind_features + bind_result +
+      "<iq type='result' id='tern-1' from='example.com'><query xmlns='urn:x:unknown'><deep><deeper/></deep>"
+      "</query></iq>"
+      "<message from='romeo@example.net' type='chat'><body>hi</body>"
+      "<active xmlns='http://jabber.org/protocol/chatstates'/></message></stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect<dropping>(input, std::back_inserter(written), how);
+  const auto answer = session.try_request(tern::iq::get{.to = "example.com"});
+  ASSERT_TRUE(answer.has_value());
+  EXPECT_TRUE(answer->payload.empty());
+  const auto one = session.receive();
+  ASSERT_TRUE(one.has_value());
+  const auto& chat = std::get<dropping::message::chat>(std::get<dropping::message_t>(*one));
+  EXPECT_EQ(chat.body, "hi");
+  EXPECT_TRUE(chat.payload.empty());
+}
