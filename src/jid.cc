@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // tern.jid: XMPP addresses, RFC 7622.
 //
 //   auto who = tern::jid::parse("Juliet@Example.COM/balcony");   // std::expected<jid, jid_error>

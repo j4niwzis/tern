@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Authentication: the SASL mechanisms a client offers -- SCRAM-SHA-256 and
 // SCRAM-SHA-1 (RFC 5802, RFC 7677), without channel binding, and PLAIN (RFC
 // 4616), only for over TLS. Messages in and out; the caller carries them.

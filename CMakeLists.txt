@@ -24,7 +24,7 @@ endif()
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
   GIT_TAG ae282d036df95362af7707c46c40dcd8047f6404
-  LICENSE LicenseRef-proprietary
+  LICENSE AGPL-3.0-only
   SYSTEM NEVER
   TARGETS chevron)
 cme_options(chevron "CHEVRON_TESTS OFF")
@@ -33,7 +33,7 @@ cme_find_package(chevron REQUIRED)
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
   GIT_TAG 998a915e2edb45e883f0a497b5fbae54d5406620
-  LICENSE LicenseRef-proprietary
+  LICENSE AGPL-3.0-only
   SYSTEM NEVER
   TARGETS alef_precis)
 cme_options(alef "ALEF_TESTS OFF")

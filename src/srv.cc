@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Where an XMPP service is (RFC 6120, 3.2.1, and RFC 2782): the DNS query for
 // its SRV records, their answer read, and the order to try them in -- the
 // bytes only; sending the query is the caller's, over whatever it has.

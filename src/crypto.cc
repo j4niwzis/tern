@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // What authentication needs of cryptography, and no more: SHA-1 and SHA-256
 // (FIPS 180-4), HMAC (RFC 2104), PBKDF2 (RFC 8018) and Base64 (RFC 4648).
 // All of it constexpr, and none of it for anything but SCRAM.

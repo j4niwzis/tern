@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // A client's stream: connecting, securing, authenticating and binding a
 // resource (RFC 6120), then stanzas in and out (RFC 6121) -- over a transport
 // of the caller's, whose abilities (STARTTLS, channel binding) are found at

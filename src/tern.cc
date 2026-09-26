@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // All of tern: import tern;
 export module tern;
 
