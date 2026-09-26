@@ -53,8 +53,8 @@ What the RFCs require only of servers is left out.
 | 2.1.3 | Roster get | done: `request<tern::query::roster>()` | `Stream.RosterAndPushes` |
 | 2.1.6 | Roster push: answered with a result, from the client's own account only | done: answered, and handed out or to its handler; a push from anyone else ignored | `Stream.RosterAndPushes` |
 | 2.6 | Roster versioning | partial: `ver` asked with and read; the stored roster is the caller's | `Stream.RosterAndPushes` |
-| 3 | Subscription requests, approval, cancellation, unsubscribing | partial: the stanza kinds exist (`presence::subscribe`, …); no state kept | — |
-| 4.2 | Initial presence after the roster | not yet | — |
-| 4.5 | Unavailable presence before closing the stream | not yet | — |
+| 3 | Subscription requests, approval, cancellation, unsubscribing, each to a bare JID | done: `subscribe`, `approve`, `deny`, `unsubscribe`; the state is the server's | `Stream.PresenceAndSubscriptions` |
+| 4.2 | Initial presence after the roster | done: `available()`; asking for the roster first is the caller's | `Stream.PresenceAndSubscriptions` |
+| 4.5 | Unavailable presence before closing the stream | done: `close()` sends it where presence was sent | `Stream.PresenceAndSubscriptions` |
 | 5.2.2 | Message types: chat, groupchat, headline, normal, error | done | `Stream.ScramBindAndStanzas` |
 | 5.2.3 | `<thread/>` kept and passed on | partial: kept in payload, not a member | — |

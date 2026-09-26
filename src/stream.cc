@@ -9,6 +9,7 @@ export module tern.stream;
 
 import std;
 import chevron;
+import tern.jid;
 import tern.crypto;
 import tern.sasl;
 
@@ -676,6 +677,15 @@ class session {
   void deliver_unhandled(bool deliver) { deliver_unhandled_ = deliver; }
 
  private:
+  template <class Presence>
+  std::expected<void, jid_error> to_bare(std::string_view to) {
+    auto address = jid::parse(to);
+    if (!address)
+      return std::unexpected(address.error());
+    send(Presence{.to = address->bare().str()});
+    return {};
+  }
+
   // One reader at a time; a failure is everyone's.
   std::expected<std::optional<stanza_t>, connect_error> read_locked() {
     reading_ = true;
@@ -820,8 +830,30 @@ class session {
   // before its own closing tag still arrives: go on reading stanzas() until
   // it ends, and only then close the connection.
   void close() {
+    // RFC 6121, 4.5: unavailable presence before the stream ends, where
+    // presence was sent.
+    if (announced_) {
+      send(presence::unavailable{});
+      announced_ = false;
+    }
     out_ = std::ranges::copy(std::string_view("</stream:stream>"), std::move(out_)).out;
   }
+
+  // Presence (RFC 6121, 4): available -- the initial presence after the
+  // roster, or a change of it -- and, to one address, directed.
+  void available(presence::available said = {}) {
+    if (!said.to)
+      announced_ = true;
+    send(said);
+  }
+
+  // Subscriptions (RFC 6121, 3), each to a bare JID as 3.1.1 wants: asking
+  // for someone's presence, approving or denying their asking, and taking
+  // one's own back. An address that is not one is an error, not sent.
+  std::expected<void, jid_error> subscribe(std::string_view to) { return to_bare<presence::subscribe>(to); }
+  std::expected<void, jid_error> approve(std::string_view to) { return to_bare<presence::subscribed>(to); }
+  std::expected<void, jid_error> deny(std::string_view to) { return to_bare<presence::unsubscribed>(to); }
+  std::expected<void, jid_error> unsubscribe(std::string_view to) { return to_bare<presence::unsubscribe>(to); }
 
   // For connect(): the reading and writing it sets up, and the JID it bound.
   detail::source<I, S>& source() { return source_; }
@@ -845,6 +877,7 @@ class session {
   std::optional<connect_error> failed_;
   std::function<void()> yield_;
   bool deliver_unhandled_ = false;
+  bool announced_ = false;
   std::map<std::pair<std::string, std::string>, std::function<std::vector<chevron::any>(const chevron::any&)>>
       handlers_;
 };

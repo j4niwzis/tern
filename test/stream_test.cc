@@ -469,3 +469,31 @@ TEST(Stream, RosterAndPushes) {
   EXPECT_NE(written.find("id=\"push1\" type=\"result\""), std::string::npos) << written;
   EXPECT_EQ(written.find("push2"), std::string::npos) << written;
 }
+
+// RFC 6121, 3 and 4: subscriptions to bare JIDs, initial presence, and
+// unavailable presence before the stream ends.
+TEST(Stream, PresenceAndSubscriptions) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result + "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  written.clear();
+  session.available(tern::presence::available{.show = "chat"});
+  ASSERT_TRUE(session.subscribe("Romeo@Example.NET/orchard"));
+  ASSERT_TRUE(session.approve("nurse@example.com"));
+  EXPECT_FALSE(session.deny("@example.com"));  // not an address: nothing sent
+  session.close();
+  EXPECT_EQ(written,
+            "<presence xmlns=\"jabber:client\"><show>chat</show></presence>"
+            "<presence xmlns=\"jabber:client\" to=\"romeo@example.net\" type=\"subscribe\"/>"
+            "<presence xmlns=\"jabber:client\" to=\"nurse@example.com\" type=\"subscribed\"/>"
+            "<presence xmlns=\"jabber:client\" type=\"unavailable\"/>"
+            "</stream:stream>");
+}

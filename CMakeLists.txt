@@ -59,8 +59,8 @@ endfunction()
 
 tern_module(tern_crypto src/crypto.cc)
 tern_module(tern_sasl src/sasl.cc tern_crypto)
-tern_module(tern_stream src/stream.cc tern_crypto tern_sasl chevron Boost::pfr)
 tern_module(tern_jid src/jid.cc alef_utf alef_precis alef_idna)
+tern_module(tern_stream src/stream.cc tern_crypto tern_sasl tern_jid chevron Boost::pfr)
 tern_module(tern src/tern.cc tern_crypto tern_sasl tern_stream tern_jid)
 
 add_library(tern::crypto ALIAS tern_crypto)
