@@ -1,0 +1,60 @@
+# Compliance
+
+What RFC 6120 (XMPP Core), RFC 6121 (XMPP IM) and RFC 7622 (addresses)
+require of a client, a row each, and where tern stands. **done** has a test
+beside it; **partial** says what is missing; **not yet** is not there at all.
+What the RFCs require only of servers is left out.
+
+## RFC 6120: XMPP Core
+
+| § | Requirement | Status | Test |
+| --- | --- | --- | --- |
+| 4.2 | The initiating entity opens the stream with `to` (the server's domain) and `version='1.0'` | done | `Stream.ScramBindAndStanzas` |
+| 4.3.2 | The stream is restarted, with a new header, after TLS and after SASL success | done | `Stream.StartTlsThenPlain`, `Stream.ScramBindAndStanzas` |
+| 4.4 | Closing: `</stream:stream>` sent, and the peer's closing tag waited for before the connection is closed | partial: `close()` sends it; waiting for the peer's is the caller's | — |
+| 4.6 | Whitespace keepalives are accepted between stanzas | partial: white space between stanzas is skipped by the reader, untested | — |
+| 4.9 | Stream errors: `<stream:error/>` parsed, its condition reported, the stream closed | partial: a stream error ends negotiation with its detail; after binding it is a read error without the condition | `Stream.WhatStopsIt` |
+| 4.9.3.19 | `see-other-host`: reconnect to the host given | not yet | — |
+| 5.3.1 | STARTTLS used where offered; a server that requires it and a client that cannot is an error | done | `Stream.StartTlsThenPlain`, `Stream.WhatStopsIt` |
+| 5.4.3.3 | After `<proceed/>`, nothing is read or written before TLS is in place | done: the hook runs before anything past `<proceed/>` is read | `Stream.StartTlsThenPlain` |
+| 5.4.3.3 | After `<failure/>` for STARTTLS the stream is closed | partial: negotiation fails; the caller closes | — |
+| 6.3.3 | Mechanisms chosen by the client's preference among those offered | done: SCRAM-SHA-256, then SCRAM-SHA-1, then PLAIN | `Stream.ScramBindAndStanzas` |
+| 6.3.10 | PLAIN not used without TLS unless explicitly allowed | done | `Stream.WhatStopsIt` |
+| 6.4.2 | SCRAM as RFC 5802/7677: nonce, salted password, proofs, the server's signature verified | done | `Sasl.*`, `Stream.ScramBindAndStanzas` |
+| 6.4.3 | Channel binding (the -PLUS mechanisms) | not yet | — |
+| 6.4.5 | SASL `<failure/>`: its condition reported | partial: the failure is reported; whether with its condition is to be checked | `Stream.WhatStopsIt` |
+| 6.4.1 | `<abort/>` to give up an exchange | not yet | — |
+| 7.4 | Resource binding requested, with or without a resource | done | `Stream.ScramBindAndStanzas` |
+| 7.6.2 | The resource the server assigned is the one used | done: the JID from the result | `Stream.ScramBindAndStanzas` |
+| 7.6.2.2 | A `conflict` or other error to binding reported | partial: reported as bind refused, with the condition | — |
+| 8.1 | Stanzas have exactly `to`, `from`, `id`, `type`, `xml:lang` as attributes | done | `Stream.RequestAndAnswer` |
+| 8.1.3 | An `id` on every iq | done: made up where the request has none | `Stream.RequestAndAnswer` |
+| 8.2.3 | Every iq get or set gets exactly one result or error | done: handlers, else `service-unavailable` | `Stream.EveryRequestIsAnswered` |
+| 8.2.3 | A result or error matched to the request by id and by who sent it | done | `Stream.RequestAndAnswer`, `Stream.TwoRequestsInFlight` |
+| 8.3 | Stanza errors: `<error/>` with a type and a condition in the stanza-errors namespace, parsed and written | done | `Stream.RequestAndAnswer`, `Stream.EveryRequestIsAnswered` |
+| 8.4 | Extended content: child elements in other namespaces kept and passed on | done: `payload` | `Stream.RequestAndAnswer` |
+| 11.1 | XML restrictions: no comments, processing instructions, DTDs, entity references beyond the five | done: chevron refuses them | chevron `Parser.*` |
+| 11.6 | UTF-8, and characters that are XML characters | done: chevron checks them | chevron `Parser.LongTextChecked` |
+| 13.9 | Limits against resource exhaustion: depth, token size, attributes | done: chevron's limits | chevron `Parser.*` |
+
+## RFC 7622: addresses
+
+| § | Requirement | Status | Test |
+| --- | --- | --- | --- |
+| 3.2 | Domainpart prepared as an IDNA2008 domain name | not yet (alef has IDNA) | — |
+| 3.3 | Localpart prepared with the UsernameCaseMapped profile of PRECIS | not yet (alef has PRECIS) | — |
+| 3.4 | Resourcepart prepared with the OpaqueString profile of PRECIS | not yet (alef has PRECIS) | — |
+| 3.x | Each part at most 1023 octets after preparation | not yet | — |
+
+## RFC 6121: XMPP IM
+
+| § | Requirement | Status | Test |
+| --- | --- | --- | --- |
+| 2.1.3 | Roster get | not yet | — |
+| 2.1.6 | Roster push: answered with a result, from the client's own account only | not yet: without a roster handler it is answered with service-unavailable, which this section does not allow | — |
+| 2.6 | Roster versioning | not yet | — |
+| 3 | Subscription requests, approval, cancellation, unsubscribing | partial: the stanza kinds exist (`presence::subscribe`, …); no state kept | — |
+| 4.2 | Initial presence after the roster | not yet | — |
+| 4.5 | Unavailable presence before closing the stream | not yet | — |
+| 5.2.2 | Message types: chat, groupchat, headline, normal, error | done | `Stream.ScramBindAndStanzas` |
+| 5.2.3 | `<thread/>` kept and passed on | partial: kept in payload, not a member | — |
