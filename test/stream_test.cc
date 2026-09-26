@@ -214,3 +214,90 @@ TEST(Stream, RequestAndAnswer) {
   EXPECT_EQ(kinds, (std::vector<std::size_t>{0, 2, 1}));  // message, the other iq, presence
   EXPECT_EQ(lang, "en");
 }
+
+namespace {
+
+// Characters of a string, one at a time; at one place, the reader is
+// suspended and the other side runs -- a stackful coroutine, made of two
+// threads that never run at once.
+struct baton {
+  std::binary_semaphore first{0}, second{0};
+};
+
+struct suspending_input {
+  std::string_view text;
+  std::size_t at_which;
+  baton* pass;
+  bool* passed;
+
+  struct iterator {
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+    const suspending_input* in = nullptr;
+    std::size_t at = 0;
+    char operator*() const {
+      if (at == in->at_which && !*in->passed) {
+        *in->passed = true;
+        in->pass->second.release();  // the other one runs...
+        in->pass->first.acquire();   // ...until it lets this one go on
+      }
+      return in->text[at];
+    }
+    iterator& operator++() {
+      ++at;
+      return *this;
+    }
+    void operator++(int) { ++at; }
+    friend bool operator==(const iterator& one, std::default_sentinel_t) {
+      return one.at == one.in->text.size();
+    }
+  };
+  iterator begin() const { return {this, 0}; }
+  std::default_sentinel_t end() const { return {}; }
+};
+
+}  // namespace
+
+// Two requests in flight: the first reads the second's answer before its own,
+// and hands it over; the second waits, yielding, until it has it.
+TEST(Stream, TwoRequestsInFlight) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+      "<mechanism>PLAIN</mechanism></mechanisms></stream:features>"
+      "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>" + server_header("s2") +
+      bind_features + bind_result +
+      "<iq type='result' id='tern-2' from='example.com'><b xmlns='urn:x'/></iq>"
+      "<iq type='result' id='tern-1' from='example.com'><a xmlns='urn:x'/></iq>"
+      "</stream:stream>";
+  baton pass;
+  bool passed = false;
+  suspending_input input{server, server.find("<iq type='result' id='tern-2'"), &pass, &passed};
+  std::string written;
+  auto how = rfc7677();
+  how.plain_without_tls = true;
+  how.yield = [&] {
+    pass.first.release();
+    pass.second.acquire();
+  };
+  auto session = tern::connect(input, std::back_inserter(written), how);
+  ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
+
+  std::optional<std::expected<tern::iq, tern::request_error>> first, second;
+  std::thread b([&] {
+    pass.second.acquire();
+    second.emplace(session->request(tern::iq{.type = "get"}));
+  });
+  std::thread a([&] {
+    first.emplace(session->request(tern::iq{.type = "get"}));
+    pass.second.release();
+  });
+  a.join();
+  b.join();
+  ASSERT_TRUE(first && first->has_value());
+  ASSERT_TRUE(second && second->has_value());
+  EXPECT_EQ((*first)->id, "tern-1");
+  EXPECT_EQ((*first)->payload.at(0).local, "a");
+  EXPECT_EQ((*second)->id, "tern-2");
+  EXPECT_EQ((*second)->payload.at(0).local, "b");
+}

@@ -160,6 +160,10 @@ struct options {
   bool plain_without_tls = false;
   std::uint32_t minimum_iterations = 4096;
   std::string nonce = {};  // for SCRAM; random where empty
+  // Called by a request that has to wait while another one reads the stream:
+  // suspend here and let the others run -- a coroutine's yield, or a wait on
+  // a condition with threads. Without it, only one request may be in flight.
+  std::function<void()> yield;
 };
 
 }  // namespace tern
@@ -255,7 +259,24 @@ class session {
       pending_.pop_front();
       return std::optional<stanza>(std::move(one));
     }
-    return read_stanza();
+    for (;;) {
+      if (reading_) {
+        if (!yield_)
+          return std::unexpected(connect_error{connect_code::xml, "read while a request reads", std::nullopt});
+        yield_();
+        if (!pending_.empty()) {
+          stanza one = std::move(pending_.front());
+          pending_.pop_front();
+          return std::optional<stanza>(std::move(one));
+        }
+        continue;
+      }
+      auto one = read_locked();
+      if (!one || !*one)
+        return one;
+      if (!claimed(**one))
+        return one;
+    }
   }
 
   // An iq sent, and its answer awaited: the result or the error with the same
@@ -265,22 +286,40 @@ class session {
   std::expected<iq, request_error> request(iq question) {
     if (question.id.empty())
       question.id = "tern-" + std::to_string(++last_id_);
+    const std::string id = question.id;
+    waiting_[id] = slot{question.to, std::nullopt};
     send(question);
     for (;;) {
-      auto one = read_stanza();
-      if (!one)
-        return std::unexpected(request_error{request_code::connection, one.error(), std::nullopt});
-      if (!*one)
-        return std::unexpected(request_error{
-            request_code::connection, connect_error{connect_code::closed, "", std::nullopt}, std::nullopt});
-      if (auto* answer = std::get_if<iq>(&**one);
-          answer && answer->id == question.id && (answer->type == "result" || answer->type == "error") &&
-          (!question.to || answer->from == question.to)) {
-        if (answer->type == "error")
-          return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(*answer)});
-        return std::move(*answer);
+      if (auto found = waiting_.find(id); found->second.answer) {
+        iq answer = std::move(*found->second.answer);
+        waiting_.erase(found);
+        if (answer.type == "error")
+          return std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(answer)});
+        return answer;
       }
-      pending_.push_back(std::move(**one));
+      if (failed_) {
+        waiting_.erase(id);
+        return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
+      }
+      // Another request is reading: its reading may bring this answer too.
+      if (reading_) {
+        if (!yield_) {
+          waiting_.erase(id);
+          return std::unexpected(request_error{
+              request_code::connection,
+              connect_error{connect_code::xml, "a second request in flight, and no yield", std::nullopt},
+              std::nullopt});
+        }
+        yield_();
+        continue;
+      }
+      auto one = read_locked();
+      if (!one || !*one) {
+        waiting_.erase(id);
+        return std::unexpected(request_error{request_code::connection, *failed_, std::nullopt});
+      }
+      if (!claimed(**one))
+        pending_.push_back(std::move(**one));
     }
   }
 
@@ -301,7 +340,37 @@ class session {
     return std::move(*typed);
   }
 
+  // For connect(): how a waiting request lets others run.
+  void yield_with(std::function<void()> yield) { yield_ = std::move(yield); }
+
  private:
+  // One reader at a time; a failure is everyone's.
+  std::expected<std::optional<stanza>, connect_error> read_locked() {
+    reading_ = true;
+    auto one = read_stanza();
+    reading_ = false;
+    if (!one)
+      failed_ = one.error();
+    else if (!*one)
+      failed_ = connect_error{connect_code::closed, "", std::nullopt};
+    return one;
+  }
+
+  // An answer to a request in flight goes to it: the result or the error with
+  // its id, from the address it asked (RFC 6120, 8.2.3).
+  bool claimed(stanza& one) {
+    auto* answer = std::get_if<iq>(&one);
+    if (!answer || (answer->type != "result" && answer->type != "error"))
+      return false;
+    const auto found = waiting_.find(answer->id);
+    if (found == waiting_.end() || found->second.answer)
+      return false;
+    if (found->second.to && answer->from != found->second.to)
+      return false;
+    found->second.answer = std::move(*answer);
+    return true;
+  }
+
   std::expected<std::optional<stanza>, connect_error> read_stanza() {
     auto one = chevron::read_one_of<message, presence, iq>(source_);
     if (one)
@@ -346,6 +415,16 @@ class session {
   std::string jid_;
   std::deque<stanza> pending_;
   std::size_t last_id_ = 0;
+  // The requests in flight, by id: whom the answer must come from, and the
+  // answer once somebody has read it.
+  struct slot {
+    std::optional<std::string> to;
+    std::optional<iq> answer;
+  };
+  std::map<std::string, slot> waiting_;
+  bool reading_ = false;
+  std::optional<connect_error> failed_;
+  std::function<void()> yield_;
 };
 
 template <class I, class S, class Out>
@@ -597,6 +676,7 @@ connect(Input& input, Out output, const options& how) {
   if (auto done = steps.run(); !done)
     return std::unexpected(done.error());
   s.bound_to(std::move(steps.jid));
+  s.yield_with(how.yield);
   return s;
 }
 
