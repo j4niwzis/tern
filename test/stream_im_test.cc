@@ -270,3 +270,56 @@ TEST(Stream, RosterChanges) {
             "<iq xmlns=\"jabber:client\" id=\"tern-2\" type=\"set\"><query xmlns=\"jabber:iq:roster\">"
             "<item jid=\"tybalt@example.org\" subscription=\"remove\"/></query></iq>");
 }
+
+// XEP-0045: a room's presence says who the occupant is; joining carries
+// <x xmlns='http://jabber.org/protocol/muc'/>.
+TEST(Stream, RoomPresence) {
+  const std::string text =
+      "<presence xmlns='jabber:client' from='coven@chat.shakespeare.lit/firstwitch' to='hag66@shakespeare.lit/pda'>"
+      "<x xmlns='http://jabber.org/protocol/muc#user'>"
+      "<item affiliation='owner' role='moderator'/><status code='110'/></x></presence>";
+  const auto read = chevron::read<tern::client::presence::available>(std::string_view(text) | chevron::events);
+  ASSERT_TRUE(read.has_value());
+  ASSERT_EQ(read->payload.size(), 1u);
+  const auto* user = read->payload.front().get_if<tern::muc::user>();
+  ASSERT_NE(user, nullptr);
+  ASSERT_EQ(user->items.size(), 1u);
+  EXPECT_EQ(user->items.front().affiliation, "owner");
+  EXPECT_EQ(user->items.front().role, "moderator");
+  ASSERT_EQ(user->statuses.size(), 1u);
+  EXPECT_EQ(user->statuses.front().code, "110");
+
+  tern::client::presence::available joining{.to = "coven@chat.shakespeare.lit/thirdwitch"};
+  joining.payload.emplace_back(tern::muc::join{.history = tern::muc::history{.maxstanzas = "20"}});
+  const std::string written = chevron::to_xml(joining) | std::ranges::to<std::string>();
+  EXPECT_NE(written.find("http://jabber.org/protocol/muc"), std::string::npos) << written;
+  EXPECT_NE(written.find("maxstanzas='20'"), std::string::npos) << written;
+}
+
+// XEP-0402: the bookmarks node's items, each a room.
+TEST(Stream, Bookmarks) {
+  const std::string text =
+      "<pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='urn:xmpp:bookmarks:1'>"
+      "<item id='theplay@conference.shakespeare.lit'>"
+      "<conference xmlns='urn:xmpp:bookmarks:1' name='The Play&apos;s the Thing' autojoin='true'>"
+      "<nick>JC</nick></conference></item></items></pubsub>";
+  const auto read = chevron::read<tern::bookmarks::pubsub>(std::string_view(text) | chevron::events);
+  ASSERT_TRUE(read.has_value());
+  ASSERT_TRUE(read->items.has_value());
+  ASSERT_EQ(read->items->items.size(), 1u);
+  const auto& one = read->items->items.front();
+  EXPECT_EQ(one.id, "theplay@conference.shakespeare.lit");
+  ASSERT_TRUE(one.conference.has_value());
+  EXPECT_EQ(one.conference->name, "The Play's the Thing");
+  EXPECT_EQ(one.conference->nick, "JC");
+  EXPECT_TRUE(tern::bookmarks::autojoins(*one.conference));
+}
+
+// XEP-0333: a displayed marker, written.
+TEST(Stream, DisplayedMarker) {
+  tern::client::message::chat marker{.to = "romeo@montague.lit"};
+  marker.payload.emplace_back(tern::markers::displayed{.id = "message-1"});
+  const std::string written = chevron::to_xml(marker) | std::ranges::to<std::string>();
+  EXPECT_NE(written.find("urn:xmpp:chat-markers:0"), std::string::npos) << written;
+  EXPECT_NE(written.find("id='message-1'"), std::string::npos) << written;
+}

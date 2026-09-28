@@ -611,6 +611,135 @@ constexpr auto xml_schema(chevron::type<private_>) {
 }
 }  // namespace carbons
 
+// XEP-0045: multi-user chat -- joining a room, and who is in it.
+namespace muc {
+inline constexpr std::string_view muc_namespace = "http://jabber.org/protocol/muc";
+inline constexpr std::string_view user_namespace = "http://jabber.org/protocol/muc#user";
+
+// How much of the room's past to be sent on joining.
+struct history {
+  std::optional<std::string> maxstanzas;
+  std::optional<std::string> seconds;
+};
+constexpr auto xml_schema(chevron::type<history>) {
+  using namespace chevron::members;
+  return chevron::schema<history>().name(muc_namespace, "history").members(attribute(), attribute());
+}
+
+// What a presence to room@service/nick carries to join the room.
+struct join {
+  std::optional<muc::history> history;
+  std::optional<std::string> password;
+};
+constexpr auto xml_schema(chevron::type<join>) {
+  using namespace chevron::members;
+  return chevron::schema<join>().name(muc_namespace, "x").members(child("history"), child_text());
+}
+
+// An occupant, as a room's presence says: its affiliation (owner, admin,
+// member, outcast, none), its role (moderator, participant, visitor, none),
+// its real JID where the room shows it, and its nick where it changes.
+struct item {
+  std::optional<std::string> affiliation;
+  std::optional<std::string> role;
+  std::optional<std::string> jid;
+  std::optional<std::string> nick;
+};
+constexpr auto xml_schema(chevron::type<item>) {
+  using namespace chevron::members;
+  return chevron::schema<item>().name(user_namespace, "item").members(attribute(), attribute(), attribute(),
+                                                                      attribute());
+}
+
+// A status code: 110 is the presence of oneself, 201 a room just made.
+struct status {
+  std::string code;
+};
+constexpr auto xml_schema(chevron::type<status>) {
+  using namespace chevron::members;
+  return chevron::schema<status>().name(user_namespace, "status").members(attribute());
+}
+
+// What a room's presences carry about the occupant.
+struct user {
+  std::vector<muc::item> items;
+  std::vector<muc::status> statuses;
+};
+constexpr auto xml_schema(chevron::type<user>) {
+  using namespace chevron::members;
+  return chevron::schema<user>().name(user_namespace, "x").members(child("item"), child("status"));
+}
+}  // namespace muc
+
+// XEP-0402: the rooms one keeps, as PEP items of urn:xmpp:bookmarks:1, each
+// item's id the room's JID.
+namespace bookmarks {
+inline constexpr std::string_view bookmarks_namespace = "urn:xmpp:bookmarks:1";
+inline constexpr std::string_view pubsub_namespace = "http://jabber.org/protocol/pubsub";
+
+struct conference {
+  std::optional<std::string> name;
+  std::optional<std::string> autojoin;  // "true" or "1" to join on connecting
+  std::optional<std::string> nick;
+  std::optional<std::string> password;
+};
+constexpr auto xml_schema(chevron::type<conference>) {
+  using namespace chevron::members;
+  return chevron::schema<conference>()
+      .name(bookmarks_namespace, "conference")
+      .members(attribute(), attribute(), child_text(), child_text());
+}
+
+struct item {
+  std::string id;
+  std::optional<bookmarks::conference> conference;
+};
+constexpr auto xml_schema(chevron::type<item>) {
+  using namespace chevron::members;
+  return chevron::schema<item>().name(pubsub_namespace, "item").members(attribute(), child("conference"));
+}
+
+struct item_list {
+  std::string node;
+  std::vector<bookmarks::item> items;
+};
+constexpr auto xml_schema(chevron::type<item_list>) {
+  using namespace chevron::members;
+  return chevron::schema<item_list>().name(pubsub_namespace, "items").members(attribute(), child("item"));
+}
+
+// The answer: the bookmarks node's items.
+struct pubsub {
+  std::optional<bookmarks::item_list> items;
+};
+constexpr auto xml_schema(chevron::type<pubsub>) {
+  using namespace chevron::members;
+  return chevron::schema<pubsub>().name(pubsub_namespace, "pubsub").members(child("items"));
+}
+
+// Whether a bookmark says to join its room on connecting.
+constexpr bool autojoins(const conference& one) {
+  return one.autojoin && (*one.autojoin == "true" || *one.autojoin == "1");
+}
+}  // namespace bookmarks
+
+// XEP-0333: chat markers -- a message marked as one to be marked, and a
+// marker saying one was displayed.
+namespace markers {
+inline constexpr std::string_view markers_namespace = "urn:xmpp:chat-markers:0";
+struct markable {};
+constexpr auto xml_schema(chevron::type<markable>) {
+  return chevron::schema<markable>().name(markers_namespace, "markable");
+}
+struct displayed {
+  std::string id;
+};
+constexpr auto xml_schema(chevron::type<displayed>) {
+  using namespace chevron::members;
+  return chevron::schema<displayed>().name(markers_namespace, "displayed").members(attribute());
+}
+}  // namespace markers
+
 // XEP-0059: a page of a result set.
 namespace rsm {
 struct set {
@@ -856,6 +985,24 @@ struct carbons_disable {
 constexpr auto xml_schema(chevron::type<carbons_disable>) {
   return chevron::schema<carbons_disable>().name(carbons::carbons_namespace, "disable");
 }
+// XEP-0402: one's bookmarks, the items of the bookmarks node.
+struct bookmarks_items {
+  std::string node{tern::bookmarks::bookmarks_namespace};
+};
+constexpr auto xml_schema(chevron::type<bookmarks_items>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmarks_items>().name(tern::bookmarks::pubsub_namespace, "items").members(attribute());
+}
+struct bookmarks {
+  using kind = tern::get;
+  using answer = tern::bookmarks::pubsub;
+  bookmarks_items items;
+};
+constexpr auto xml_schema(chevron::type<bookmarks>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmarks>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(child("items"));
+}
+
 }  // namespace query
 
 // A page of the archive (XEP-0313): the messages, and how the page ends.
@@ -984,6 +1131,13 @@ struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>, Un
 using standard = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
                           answers<roster, version, disco::info, disco::items, mam::fin>,
                           extensions<delay, caps::c, carbons::received, carbons::sent, mam::result>>;
+
+// What a chat client also uses: rooms (XEP-0045), bookmarks (XEP-0402) and
+// chat markers (XEP-0333), on top of the standard protocol.
+using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
+                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub>,
+                        extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
+                                   muc::user, markers::markable, markers::displayed>>;
 
 // The standard protocol's stanzas, by their plain names.
 namespace message {
@@ -1389,6 +1543,15 @@ struct everything {
 // A queue: std::deque at run time; a std::vector while the compiler
 // evaluates, where deque cannot be used. Which is chosen when it is made,
 // so the program runs on the deque as before.
+//
+// Each element is kept in a slot of its own. A container compares its own
+// iterators, and when the element is a std::expected, expected is a template
+// argument of the iterator type, so argument-dependent lookup finds
+// expected's operator==(const expected&, const T2&) there too; libc++ 21 and
+// 22 then check its constraint, *x == v, by asking the same question again,
+// and stop with "satisfaction of constraint depends on itself". A class
+// nested in this one is not a template argument of anything the containers
+// compare.
 template <class T>
 class queue {
  public:
@@ -1418,8 +1581,8 @@ class queue {
 
   constexpr bool empty() const { return in_vector_ ? vector_.empty() : deque_.empty(); }
   constexpr std::size_t size() const { return in_vector_ ? vector_.size() : deque_.size(); }
-  constexpr T& front() { return in_vector_ ? vector_.front() : deque_.front(); }
-  constexpr T& at(std::size_t i) { return in_vector_ ? vector_[i] : deque_[i]; }
+  constexpr T& front() { return in_vector_ ? vector_.front().value : deque_.front().value; }
+  constexpr T& at(std::size_t i) { return in_vector_ ? vector_[i].value : deque_[i].value; }
   constexpr void pop_front() {
     if (in_vector_)
       vector_.erase(vector_.begin());
@@ -1428,32 +1591,35 @@ class queue {
   }
   constexpr void push_back(T one) {
     if (in_vector_)
-      vector_.push_back(std::move(one));
+      vector_.push_back(slot{std::move(one)});
     else
-      deque_.push_back(std::move(one));
+      deque_.push_back(slot{std::move(one)});
   }
   // Each element given to pred once, in order; those it says so of taken out.
   template <class Pred>
   constexpr void remove_if(Pred pred) {
+    auto of_value = [&pred](auto& one) { return pred(one.value); };
     if (in_vector_)
-      std::erase_if(vector_, pred);
+      std::erase_if(vector_, of_value);
     else
-      std::erase_if(deque_, pred);
+      std::erase_if(deque_, of_value);
   }
   template <class F>
   constexpr void for_each(F f) const {
     if (in_vector_)
-      for (const T& one : vector_)
-        f(one);
+      for (const slot& one : vector_)
+        f(one.value);
     else
-      for (const T& one : deque_)
-        f(one);
+      for (const slot& one : deque_)
+        f(one.value);
   }
   constexpr void assign(const std::vector<T>& from) {
     if (in_vector_)
-      vector_.assign(from.begin(), from.end());
+      vector_.clear();
     else
-      deque_.assign(from.begin(), from.end());
+      deque_.clear();
+    for (const T& one : from)
+      push_back(one);
   }
   constexpr std::vector<T> to_vector() const {
     std::vector<T> out;
@@ -1462,9 +1628,12 @@ class queue {
   }
 
  private:
+  struct slot {
+    T value;
+  };
   union {
-    std::deque<T> deque_;
-    std::vector<T> vector_;
+    std::deque<slot> deque_;
+    std::vector<slot> vector_;
   };
   bool in_vector_ = false;
 };
