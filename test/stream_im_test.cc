@@ -293,7 +293,7 @@ TEST(Stream, RoomPresence) {
   joining.payload.emplace_back(tern::muc::join{.history = tern::muc::history{.maxstanzas = "20"}});
   const std::string written = chevron::to_xml(joining) | std::ranges::to<std::string>();
   EXPECT_NE(written.find("http://jabber.org/protocol/muc"), std::string::npos) << written;
-  EXPECT_NE(written.find("maxstanzas='20'"), std::string::npos) << written;
+  EXPECT_NE(written.find("maxstanzas=\"20\""), std::string::npos) << written;
 }
 
 // XEP-0402: the bookmarks node's items, each a room.
@@ -321,5 +321,5 @@ TEST(Stream, DisplayedMarker) {
   marker.payload.emplace_back(tern::markers::displayed{.id = "message-1"});
   const std::string written = chevron::to_xml(marker) | std::ranges::to<std::string>();
   EXPECT_NE(written.find("urn:xmpp:chat-markers:0"), std::string::npos) << written;
-  EXPECT_NE(written.find("id='message-1'"), std::string::npos) << written;
+  EXPECT_NE(written.find("id=\"message-1\""), std::string::npos) << written;
 }
