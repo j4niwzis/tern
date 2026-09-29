@@ -740,6 +740,40 @@ constexpr auto xml_schema(chevron::type<displayed>) {
 }
 }  // namespace markers
 
+// XEP-0308: a message correcting an earlier one of the same sender.
+namespace corrections {
+struct replace {
+  std::string id;
+};
+constexpr auto xml_schema(chevron::type<replace>) {
+  using namespace chevron::members;
+  return chevron::schema<replace>().name("urn:xmpp:message-correct:0", "replace").members(attribute());
+}
+}  // namespace corrections
+
+// XEP-0424: a message taken back by its sender.
+namespace retractions {
+struct retract {
+  std::string id;
+};
+constexpr auto xml_schema(chevron::type<retract>) {
+  using namespace chevron::members;
+  return chevron::schema<retract>().name("urn:xmpp:message-retract:1", "retract").members(attribute());
+}
+}  // namespace retractions
+
+// XEP-0461: a message answering another: whose it was, and its id.
+namespace replies {
+struct reply {
+  std::optional<std::string> to;
+  std::string id;
+};
+constexpr auto xml_schema(chevron::type<reply>) {
+  using namespace chevron::members;
+  return chevron::schema<reply>().name("urn:xmpp:reply:0", "reply").members(attribute(), attribute());
+}
+}  // namespace replies
+
 // XEP-0059: a page of a result set.
 namespace rsm {
 struct set {
@@ -1132,12 +1166,14 @@ using standard = protocol<queries<roster, query::version, query::ping, query::di
                           answers<roster, version, disco::info, disco::items, mam::fin>,
                           extensions<delay, caps::c, carbons::received, carbons::sent, mam::result>>;
 
-// What a chat client also uses: rooms (XEP-0045), bookmarks (XEP-0402) and
-// chat markers (XEP-0333), on top of the standard protocol.
+// What a chat client also uses: rooms (XEP-0045), bookmarks (XEP-0402),
+// chat markers (XEP-0333), corrections (XEP-0308), retractions (XEP-0424)
+// and replies (XEP-0461), on top of the standard protocol.
 using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
                         answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
-                                   muc::user, markers::markable, markers::displayed>>;
+                                   muc::user, markers::markable, markers::displayed, corrections::replace,
+                                   retractions::retract, replies::reply>>;
 
 // The standard protocol's stanzas, by their plain names.
 namespace message {

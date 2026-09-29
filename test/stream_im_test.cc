@@ -323,3 +323,30 @@ TEST(Stream, DisplayedMarker) {
   EXPECT_NE(written.find("urn:xmpp:chat-markers:0"), std::string::npos) << written;
   EXPECT_NE(written.find("id=\"message-1\""), std::string::npos) << written;
 }
+
+// XEP-0308, 0424 and 0461: a correction, a retraction and a reply, read.
+TEST(Stream, CorrectionsRetractionsReplies) {
+  const std::string text =
+      "<message xmlns='jabber:client' from='juliet@capulet.lit/balcony' type='chat' id='m2'>"
+      "<body>Wherefore art thou, Romeo?</body><replace xmlns='urn:xmpp:message-correct:0' id='m1'/>"
+      "<reply xmlns='urn:xmpp:reply:0' to='romeo@montague.lit/orchard' id='r1'/></message>";
+  const auto read = chevron::read<tern::client::message::chat>(std::string_view(text) | chevron::events);
+  ASSERT_TRUE(read.has_value());
+  bool replaced = false, replied = false;
+  for (const auto& one : read->payload) {
+    if (const auto* correction = one.get_if<tern::corrections::replace>()) {
+      replaced = true;
+      EXPECT_EQ(correction->id, "m1");
+    }
+    if (const auto* reply = one.get_if<tern::replies::reply>()) {
+      replied = true;
+      EXPECT_EQ(reply->id, "r1");
+    }
+  }
+  EXPECT_TRUE(replaced);
+  EXPECT_TRUE(replied);
+  tern::client::message::chat retraction{.to = "juliet@capulet.lit"};
+  retraction.payload.emplace_back(tern::retractions::retract{.id = "m2"});
+  const std::string written = chevron::to_xml(retraction) | std::ranges::to<std::string>();
+  EXPECT_NE(written.find("urn:xmpp:message-retract:1"), std::string::npos) << written;
+}
