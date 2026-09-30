@@ -15,6 +15,7 @@
 export module tern.stream;
 
 import std;
+import splice;
 import chevron;
 import tern.jid;
 import tern.crypto;
@@ -175,7 +176,7 @@ constexpr std::optional<Tagged> condition_named(std::string_view name) {
   return out;
 }
 
-using error_type_t = std::variant<error_types::cancel, error_types::continue_, error_types::modify,
+using error_type_t = splice::variant<error_types::cancel, error_types::continue_, error_types::modify,
                                   error_types::auth, error_types::wait>;
 
 namespace basic {
@@ -269,9 +270,9 @@ struct subscribe_pending { static constexpr std::string_view xml_value = "subscr
 struct roster_item {
   std::string jid;
   std::optional<std::string> name;
-  std::optional<std::variant<tern::subscription::none, tern::subscription::to, tern::subscription::from,
+  std::optional<splice::variant<tern::subscription::none, tern::subscription::to, tern::subscription::from,
                              tern::subscription::both, tern::subscription::remove>> subscription;
-  std::optional<std::variant<subscribe_pending>> ask;
+  std::optional<splice::variant<subscribe_pending>> ask;
   std::vector<std::string> group;
 };
 
@@ -1133,14 +1134,14 @@ struct protocol<queries<Q...>, answers<A...>, extensions<E...>, errors<R...>, Un
     using error = basic::iq_error<error_payload, stanza_error>;
   };
 
-  using message_t = std::variant<typename message::normal, typename message::chat, typename message::groupchat,
+  using message_t = splice::variant<typename message::normal, typename message::chat, typename message::groupchat,
                                  typename message::headline, typename message::error>;
   using presence_t =
-      std::variant<typename presence::available, typename presence::unavailable, typename presence::subscribe,
+      splice::variant<typename presence::available, typename presence::unavailable, typename presence::subscribe,
                    typename presence::subscribed, typename presence::unsubscribe, typename presence::unsubscribed,
                    typename presence::probe, typename presence::error>;
-  using iq_t = std::variant<typename iq::get, typename iq::set, typename iq::result, typename iq::error>;
-  using stanza_t = std::variant<message_t, presence_t, iq_t>;
+  using iq_t = splice::variant<typename iq::get, typename iq::set, typename iq::result, typename iq::error>;
+  using stanza_t = splice::variant<message_t, presence_t, iq_t>;
 
   template <class T>
   static constexpr bool answers_with = (std::same_as<T, A> || ...);
@@ -1227,7 +1228,7 @@ struct roster_cache {
   // remove dropped; and the version it brings.
   constexpr void apply(roster push) {
     for (roster_item& one : push.items) {
-      if (one.subscription && std::holds_alternative<tern::subscription::remove>(*one.subscription)) {
+      if (one.subscription && splice::holds_alternative<tern::subscription::remove>(*one.subscription)) {
         items.erase(one.jid);
       } else {
         std::string key = one.jid;
@@ -1786,7 +1787,7 @@ class source {
 
  private:
   constexpr void track(const chevron::event& one) {
-    if (const auto* start = std::get_if<chevron::start_element>(&one)) {
+    if (const auto* start = splice::get_if<chevron::start_element>(&one)) {
       if (++depth_ == 2) {
         current_ = top{std::string(start->name.local), {}, {}, std::nullopt};
         for (const auto& attribute : start->attributes) {
@@ -1800,7 +1801,7 @@ class source {
             current_.from = std::string(attribute.value);
         }
       }
-    } else if (std::holds_alternative<chevron::end_element>(one) && depth_ > 0) {
+    } else if (splice::holds_alternative<chevron::end_element>(one) && depth_ > 0) {
       --depth_;
     }
   }
@@ -1950,8 +1951,8 @@ class session {
     pending_.remove_if([&](std::expected<stanza_t, connect_error>& entry) {
       bool taken = false;
       if (entry)
-        if (auto* message = std::get_if<message_t>(&*entry))
-          std::visit(
+        if (auto* message = splice::get_if<message_t>(&*entry))
+          splice::visit(
               [&](auto& one) {
                 for (auto& carried : one.payload)
                   if (auto* result = carried.template get_if<mam::result>(); result && result->queryid == queryid) {
@@ -2340,9 +2341,9 @@ class session {
     if (found->second.answer) {
       auto answer = std::move(*found->second.answer);
       waiting_.erase(found);
-      if (auto* refused = std::get_if<error>(&answer))
+      if (auto* refused = splice::get_if<error>(&answer))
         return outcome(std::unexpected(request_error{request_code::error_reply, std::nullopt, std::move(refused->reason)}));
-      return outcome(std::get<result>(std::move(answer)));
+      return outcome(splice::get<result>(std::move(answer)));
     }
     if (found->second.malformed) {
       auto bad = std::move(*found->second.malformed);
@@ -2421,9 +2422,9 @@ class session {
 
   // Whom a stanza is from, as it says.
   static constexpr std::optional<std::string_view> from_of(const stanza_t& one) {
-    return std::visit(
+    return splice::visit(
         [](const auto& kind) {
-          return std::visit(
+          return splice::visit(
               [](const auto& stanza) -> std::optional<std::string_view> {
                 if constexpr (requires { stanza.from; })
                   if (stanza.from)
@@ -2590,10 +2591,10 @@ class session {
   // A get or a set that arrived: to its handler, or refused -- every one gets
   // a reply -- unless requests nobody handles are handed out.
   constexpr bool dispatched(stanza_t& one) {
-    auto* kind = std::get_if<iq_t>(&one);
+    auto* kind = splice::get_if<iq_t>(&one);
     if (!kind)
       return false;
-    return std::visit(
+    return splice::visit(
         [&](auto& question) {
           using type = std::remove_cvref_t<decltype(question)>;
           if constexpr (std::same_as<type, typename P::iq::get> || std::same_as<type, typename P::iq::set>) {
@@ -2636,10 +2637,10 @@ class session {
   // An answer to a request in flight goes to it: the result or the error with
   // its id, from the address it asked (RFC 6120, 8.2.3).
   constexpr bool claimed(stanza_t& one) {
-    auto* kind = std::get_if<iq_t>(&one);
+    auto* kind = splice::get_if<iq_t>(&one);
     if (!kind)
       return false;
-    return std::visit(
+    return splice::visit(
         [&](auto& answer) {
           using type = std::remove_cvref_t<decltype(answer)>;
           if constexpr (std::same_as<type, result> || std::same_as<type, error>) {
@@ -2676,12 +2677,12 @@ class session {
   constexpr std::expected<std::optional<stanza_t>, connect_error> read_one_stanza() {
     auto one = P::read_one(source_);
     if (one) {
-      if (std::holds_alternative<sm::r>(*one)) {
+      if (splice::holds_alternative<sm::r>(*one)) {
         ++acks_asked_;
         acks_read_ = true;
         return std::nullopt;
       }
-      if (const auto* ack = std::get_if<sm::a>(&*one)) {
+      if (const auto* ack = splice::get_if<sm::a>(&*one)) {
         acked_h_ = ack->h;
         acks_read_ = true;
         return std::nullopt;
@@ -2689,10 +2690,10 @@ class session {
     }
     // A stream error ends the stream: its condition is the failure.
     if (one) {
-      if (const auto* ended = std::get_if<stream_error>(&*one))
+      if (const auto* ended = splice::get_if<stream_error>(&*one))
         return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()),
                                              std::nullopt, ended->other_host()});
-      return std::visit(
+      return splice::visit(
           [](auto&& value) {
             using type = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::same_as<type, stream_error> || std::same_as<type, sm::r> || std::same_as<type, sm::a>)
@@ -2738,7 +2739,7 @@ class session {
   // answer once somebody has read it.
   struct slot {
     std::optional<std::string> to;
-    std::optional<std::variant<result, error>> answer;
+    std::optional<splice::variant<result, error>> answer;
     std::optional<malformed_stanza> malformed{};
     std::optional<typename Scheduler::handle> waiter{};  // the coroutine parked on it
   };
@@ -2966,10 +2967,10 @@ class negotiation {
       auto next = chevron::read_one_of<features, stream_error>(s_.source());
       if (!next)
         return fail(connect_code::xml, "stream features: " + next.error().where);
-      if (const auto* ended = std::get_if<stream_error>(&*next))
+      if (const auto* ended = splice::get_if<stream_error>(&*next))
         return std::unexpected(connect_error{connect_code::stream_error, std::string(ended->condition()),
                                              std::nullopt, ended->other_host()});
-      const features* offered = &std::get<features>(*next);
+      const features* offered = &splice::get<features>(*next);
       if (offered->starttls && !secured) {
         if constexpr (tls_transport<transport_type>) {
           write("<starttls xmlns='" + std::string(tls_namespace) + "'/>");
@@ -3011,7 +3012,7 @@ class negotiation {
         auto answer = chevron::read_one_of<sm::enabled, sm::failed>(s_.source());
         if (!answer)
           return fail(connect_code::xml, "stream management: " + answer.error().where);
-        if (const auto* on = std::get_if<sm::enabled>(&*answer))
+        if (const auto* on = splice::get_if<sm::enabled>(&*answer))
           enabled = *on;
       }
       return {};
@@ -3044,7 +3045,7 @@ class negotiation {
       return fail(connect_code::xml, "stream header");
     if (!*header)
       return fail(connect_code::closed, "before the stream header");
-    const auto* start = std::get_if<chevron::start_element>(&**header);
+    const auto* start = splice::get_if<chevron::start_element>(&**header);
     if (!start || start->name.uri != stream_namespace || start->name.local != "stream")
       return fail(connect_code::xml, "not a stream header");
     return {};
@@ -3055,7 +3056,7 @@ class negotiation {
     auto first = s_.source().next();
     if (!first || !*first)
       return fail(connect_code::closed, "while negotiating");
-    const auto* start = std::get_if<chevron::start_element>(&**first);
+    const auto* start = splice::get_if<chevron::start_element>(&**first);
     if (!start)
       return fail(connect_code::xml, "while negotiating");
     nonza out{std::string(start->name.uri), std::string(start->name.local), {}};
@@ -3068,19 +3069,19 @@ class negotiation {
       auto next = s_.source().next();
       if (!next || !*next)
         return fail(connect_code::closed, "while negotiating");
-      if (const auto* inner = std::get_if<chevron::start_element>(&**next)) {
+      if (const auto* inner = splice::get_if<chevron::start_element>(&**next)) {
         if (depth == 1) {
           ++children;
           if (out.first_child.empty())
             out.first_child = std::string(inner->name.local);
         }
         ++depth;
-      } else if (std::holds_alternative<chevron::end_element>(**next)) {
+      } else if (splice::holds_alternative<chevron::end_element>(**next)) {
         --depth;
       } else if (depth == 1) {
-        out.text += std::get<chevron::text>(**next).content;
+        out.text += splice::get<chevron::text>(**next).content;
       } else if (depth == 2 && children == 1) {
-        first_text += std::get<chevron::text>(**next).content;
+        first_text += splice::get<chevron::text>(**next).content;
       }
     }
     if (ended) {
@@ -3181,10 +3182,10 @@ class negotiation {
     auto answer = chevron::read_one_of<sm::resumed, sm::failed>(s_.source());
     if (!answer)
       return fail(connect_code::xml, "resume: " + answer.error().where);
-    if (const auto* refused = std::get_if<sm::failed>(&*answer))
+    if (const auto* refused = splice::get_if<sm::failed>(&*answer))
       return fail(connect_code::resume_failed,
                   refused->what ? std::string(condition_name(*refused->what)) : std::string());
-    resumed_h = std::get<sm::resumed>(*answer).h;
+    resumed_h = splice::get<sm::resumed>(*answer).h;
     jid = resume_->jid;
     return {};
   }
@@ -3199,10 +3200,10 @@ class negotiation {
                                      basic::iq_error<chevron::tagged<chevron::any>, stanza_error>>(s_.source());
     if (!read)
       return fail(connect_code::xml, "bind: " + read.error().where);
-    if (const auto* refused = std::get_if<1>(&*read))
+    if (const auto* refused = splice::get_if<1>(&*read))
       return std::unexpected(connect_error{connect_code::bind_refused, std::string(refused->reason.condition()),
                                            std::nullopt, std::nullopt, refused->reason});
-    const auto& answer = std::get<0>(*read);
+    const auto& answer = splice::get<0>(*read);
     if (answer.id != "bind_1")
       return fail(connect_code::bind_refused, "not the answer to the bind");
     if (!answer.payload.empty())
@@ -3302,31 +3303,31 @@ namespace detail {
 template <class K, class V>
 inline constexpr bool in_variant = false;
 template <class K, class... A>
-inline constexpr bool in_variant<K, std::variant<A...>> = (std::same_as<K, A> || ...);
+inline constexpr bool in_variant<K, splice::variant<A...>> = (std::same_as<K, A> || ...);
 }  // namespace detail
 
 // What was received, without nesting std::visit: f called with the kind of
 // stanza itself -- message::chat, presence::subscribe, iq::result... -- of
 // any protocol's stanza_t.
 template <class F, class... Families>
-constexpr decltype(auto) visit(F&& f, const std::variant<Families...>& stanza) {
-  return std::visit([&](const auto& family) -> decltype(auto) { return std::visit(f, family); }, stanza);
+constexpr decltype(auto) visit(F&& f, const splice::variant<Families...>& stanza) {
+  return splice::visit([&](const auto& family) -> decltype(auto) { return splice::visit(f, family); }, stanza);
 }
 template <class F, class... Families>
-constexpr decltype(auto) visit(F&& f, std::variant<Families...>& stanza) {
-  return std::visit([&](auto& family) -> decltype(auto) { return std::visit(f, family); }, stanza);
+constexpr decltype(auto) visit(F&& f, splice::variant<Families...>& stanza) {
+  return splice::visit([&](auto& family) -> decltype(auto) { return splice::visit(f, family); }, stanza);
 }
 
 // The stanza as that kind, where it is one; nothing otherwise.
 //   if (const auto* chat = tern::get_if<tern::message::chat>(one)) ...
 template <class Kind, class... Families>
-constexpr const Kind* get_if(const std::variant<Families...>& stanza) {
+constexpr const Kind* get_if(const splice::variant<Families...>& stanza) {
   const Kind* out = nullptr;
   (
       [&] {
         if constexpr (detail::in_variant<Kind, Families>)
-          if (const auto* family = std::get_if<Families>(&stanza))
-            out = std::get_if<Kind>(family);
+          if (const auto* family = splice::get_if<Families>(&stanza))
+            out = splice::get_if<Kind>(family);
       }(),
       ...);
   return out;
@@ -3347,7 +3348,7 @@ constexpr const T* find(const Stanza& one) {
 
 // The same through a stanza_t, whatever its kind.
 template <class T, class... Families>
-constexpr const T* find(const std::variant<Families...>& stanza) {
+constexpr const T* find(const splice::variant<Families...>& stanza) {
   return tern::visit([](const auto& kind) { return tern::find<T>(kind); }, stanza);
 }
 

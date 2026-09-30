@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 import std;
+import splice;
 import tern;
 import chevron;
 
@@ -272,19 +273,19 @@ int main(int argc, char** argv) {
         step(first_bare + " asks for " + second_bare + "'s presence; approved");
         (void)first.subscribe(second_bare);
         const bool asked = wait_for(second, [](const tern::stanza_t& one) {
-          const auto* presence = std::get_if<tern::presence_t>(&one);
-          return presence && std::holds_alternative<tern::presence::subscribe>(*presence);
+          const auto* presence = splice::get_if<tern::presence_t>(&one);
+          return presence && splice::holds_alternative<tern::presence::subscribe>(*presence);
         });
         std::println("subscribe arrived: {}", asked);
         (void)second.approve(first_bare);
 
         step("the roster push that follows, applied to the cache");
         const bool pushed = wait_for(first, [&](const tern::stanza_t& one) {
-          const auto* iq = std::get_if<tern::iq_t>(&one);
-          const auto* set = iq ? std::get_if<tern::iq::set>(iq) : nullptr;
+          const auto* iq = splice::get_if<tern::iq_t>(&one);
+          const auto* set = iq ? splice::get_if<tern::iq::set>(iq) : nullptr;
           return set && cache.apply(*set) && cache.items.contains(second_bare) &&
                  cache.items.at(second_bare).subscription &&
-                 !std::holds_alternative<tern::subscription::none>(*cache.items.at(second_bare).subscription);
+                 !splice::holds_alternative<tern::subscription::none>(*cache.items.at(second_bare).subscription);
         });
         std::println("pushed: {}; roster version {}, {} item(s)", pushed, cache.ver.value_or("(none)"),
                      cache.items.size());
@@ -295,8 +296,8 @@ int main(int argc, char** argv) {
                                      .thread = tern::thread{.id = "tern-live-1"}});
       std::optional<std::string> body;
       wait_for(second, [&](const tern::stanza_t& one) {
-        const auto* message = std::get_if<tern::message_t>(&one);
-        const auto* chat = message ? std::get_if<tern::message::chat>(message) : nullptr;
+        const auto* message = splice::get_if<tern::message_t>(&one);
+        const auto* chat = message ? splice::get_if<tern::message::chat>(message) : nullptr;
         if (chat && chat->body)
           body = chat->body;
         return body.has_value();

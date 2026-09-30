@@ -3,7 +3,7 @@
   "lock": 1,
   "ports": {
     "alef": {
-      "commit": "583c3a85adfecf60e68dccd2742e7ad97e667645",
+      "commit": "902f701a1277335b228ca7252af9b6bf940468ac",
       "url": "https://github.com/j4niwzis/alef.git"
     },
     "boost": {
@@ -20,7 +20,7 @@
       "version": "1.92.0"
     },
     "chevron": {
-      "commit": "3b72d013aa7be275db58accb0de2007db0c3f47d",
+      "commit": "29e716ec45db10407960cbe40294c18a270289c0",
       "url": "https://github.com/j4niwzis/chevron.git"
     },
     "cmake-everywhere": {
@@ -29,6 +29,10 @@
     "googletest-modules": {
       "commit": "706920f1d230f0316d271466d8885735be3e300e",
       "url": "https://github.com/j4niwzis/googletest-modules.git"
+    },
+    "splice": {
+      "commit": "39bc67a00185f488c989d3c18b98e5995e4dc8dd",
+      "url": "https://github.com/j4niwzis/splice.git"
     }
   }
 }

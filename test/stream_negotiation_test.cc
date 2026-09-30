@@ -1,6 +1,7 @@
 // The stream, against a scripted server: what the client writes, byte for
 // byte, what it reads, and how far it reads.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -39,7 +40,7 @@ TEST(Stream, ScramBindAndStanzas) {
   std::vector<tern::message::chat> received;
   for (auto&& one : session->stanzas()) {
     ASSERT_TRUE(one.has_value()) << one.error().detail;
-    received.push_back(std::get<tern::message::chat>(std::get<tern::message_t>(*one)));
+    received.push_back(splice::get<tern::message::chat>(splice::get<tern::message_t>(*one)));
     session->send(tern::message::chat{.to = "romeo@example.net", .body = "hello"});
   }
   // One message, and the loop ended where the server ended the stream.

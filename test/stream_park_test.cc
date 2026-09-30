@@ -3,6 +3,7 @@
 // stream ends. The coroutines are threads, one running at a time, as fibers
 // on one thread are.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -60,10 +61,10 @@ tern::options plain() {
 std::string body_of(const std::optional<tern::stanza_t>& one) {
   if (!one)
     return "(the end)";
-  const auto* message = std::get_if<tern::message_t>(&*one);
-  if (!message || !std::holds_alternative<tern::message::chat>(*message))
+  const auto* message = splice::get_if<tern::message_t>(&*one);
+  if (!message || !splice::holds_alternative<tern::message::chat>(*message))
     return "(not a chat message)";
-  return std::get<tern::message::chat>(*message).body.value_or("");
+  return splice::get<tern::message::chat>(*message).body.value_or("");
 }
 
 // A coroutine started, run until it parks, the reader -- this thread --

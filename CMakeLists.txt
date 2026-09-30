@@ -16,6 +16,20 @@ if(NOT COMMAND cme_find_package)
   include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
 endif()
 
+# splice: the variant tern's stanzas and answers are held in, and the
+# visiting. The family's step count (tern's, chevron's and alef's), so that
+# all of them share one std.
+set(SPLICE_CONSTEXPR_STEPS 100000000 CACHE STRING
+  "clang's -fconstexpr-steps for splice, as tern and its family set it")
+cme_declare_port(NAME splice PROVIDES splice
+  GITHUB_REPOSITORY j4niwzis/splice
+  GIT_TAG 39bc67a00185f488c989d3c18b98e5995e4dc8dd
+  LICENSE GPL-3.0-only
+  SYSTEM NEVER
+  TARGETS splice)
+cme_options(splice "SPLICE_TESTS OFF")
+cme_find_package(splice REQUIRED)
+
 # chevron, for the XML of the stream, and alef, for addresses (PRECIS and
 # IDNA, RFC 7622): cme ports, pinned to commits and fetched from GitHub. Both
 # are private, so git has to be able to authenticate -- a credential helper,
@@ -23,7 +37,7 @@ endif()
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG 3b72d013aa7be275db58accb0de2007db0c3f47d
+  GIT_TAG 29e716ec45db10407960cbe40294c18a270289c0
   LICENSE AGPL-3.0-only
   SYSTEM NEVER
   TARGETS chevron)
@@ -32,7 +46,7 @@ cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 583c3a85adfecf60e68dccd2742e7ad97e667645
+  GIT_TAG 902f701a1277335b228ca7252af9b6bf940468ac
   LICENSE AGPL-3.0-only
   SYSTEM NEVER
   TARGETS alef)
@@ -56,7 +70,7 @@ add_library(tern)
 target_sources(tern PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
   FILES src/crypto.cc src/sasl.cc src/jid.cc src/stream.cc src/srv.cc src/tern.cc)
 target_compile_features(tern PUBLIC cxx_std_26)
-target_link_libraries(tern PUBLIC alef chevron Boost::pfr)
+target_link_libraries(tern PUBLIC alef chevron splice Boost::pfr)
 target_compile_options(tern PUBLIC
   $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fconstexpr-steps=${TERN_CONSTEXPR_STEPS}>)
 

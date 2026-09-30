@@ -1,6 +1,7 @@
 // The stream, against a scripted server: what the client writes, byte for
 // byte, what it reads, and how far it reads.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -66,7 +67,7 @@ TEST(Stream, RequestAndAnswer) {
   ASSERT_TRUE(refused.error().reply.has_value());
   EXPECT_EQ(refused.error().reply->condition(), "feature-not-implemented");
   EXPECT_TRUE(refused.error().reply->what->is<tern::conditions::feature_not_implemented>());
-  EXPECT_TRUE(std::holds_alternative<tern::error_types::cancel>(*refused.error().reply->type));
+  EXPECT_TRUE(splice::holds_alternative<tern::error_types::cancel>(*refused.error().reply->type));
 
   // What arrived meanwhile, in order.
   std::vector<std::size_t> kinds;
@@ -74,7 +75,7 @@ TEST(Stream, RequestAndAnswer) {
   for (auto&& one : session->stanzas()) {
     ASSERT_TRUE(one.has_value());
     kinds.push_back(one->index());
-    if (const auto* m = std::get_if<test_protocol::message_t>(&*one)) lang = std::get<test_protocol::message::normal>(*m).lang;
+    if (const auto* m = splice::get_if<test_protocol::message_t>(&*one)) lang = splice::get<test_protocol::message::normal>(*m).lang;
   }
   EXPECT_EQ(kinds, (std::vector<std::size_t>{0, 2, 1}));  // message, the other iq, presence
   EXPECT_EQ(lang, "en");

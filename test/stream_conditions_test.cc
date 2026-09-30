@@ -1,6 +1,7 @@
 // The stream, against a scripted server: what the client writes, byte for
 // byte, what it reads, and how far it reads.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -91,7 +92,7 @@ TEST(Stream, MalformedStanzas) {
       seen.push_back("malformed " + one.error().malformed->element);
       continue;
     }
-    seen.push_back(std::get<tern::message::chat>(std::get<tern::message_t>(*one)).body.value_or(""));
+    seen.push_back(splice::get<tern::message::chat>(splice::get<tern::message_t>(*one)).body.value_or(""));
   }
   EXPECT_EQ(seen, (std::vector<std::string>{"malformed iq", "malformed presence", "still here"}));
   EXPECT_NE(written.find("id=\"s1\" type=\"error\"><error type=\"modify\"><bad-request"), std::string::npos)

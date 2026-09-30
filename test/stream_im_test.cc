@@ -1,6 +1,7 @@
 // The stream, against a scripted server: what the client writes, byte for
 // byte, what it reads, and how far it reads.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -100,7 +101,7 @@ TEST(Stream, RosterAndPushes) {
   EXPECT_EQ(contacts.ver, "ver7");
   ASSERT_EQ(contacts.items.size(), 2u);
   EXPECT_EQ(contacts.items[0].name, "Nurse");
-  EXPECT_TRUE(std::holds_alternative<tern::subscription::both>(*contacts.items[0].subscription));
+  EXPECT_TRUE(splice::holds_alternative<tern::subscription::both>(*contacts.items[0].subscription));
   EXPECT_EQ(contacts.items[0].group, (std::vector<std::string>{"Servants"}));
   EXPECT_TRUE(contacts.items[1].ask.has_value());
   EXPECT_NE(written.find("<query xmlns=\"jabber:iq:roster\"/>"), std::string::npos) << written;
@@ -148,9 +149,9 @@ TEST(Stream, RosterVersioning) {
 
   const auto push = session.try_receive();
   ASSERT_TRUE(push.has_value() && push->has_value());
-  const auto* iq = std::get_if<tern::iq_t>(&**push);
+  const auto* iq = splice::get_if<tern::iq_t>(&**push);
   ASSERT_NE(iq, nullptr);
-  const auto* set = std::get_if<tern::iq::set>(iq);
+  const auto* set = splice::get_if<tern::iq::set>(iq);
   ASSERT_NE(set, nullptr);
   EXPECT_TRUE(cache.apply(*set));
   EXPECT_EQ(cache.ver, "ver8");
@@ -242,7 +243,7 @@ TEST(Stream, DropUnknown) {
   EXPECT_TRUE(answer->payload.empty());
   const auto one = session.receive();
   ASSERT_TRUE(one.has_value());
-  const auto& chat = std::get<dropping::message::chat>(std::get<dropping::message_t>(*one));
+  const auto& chat = splice::get<dropping::message::chat>(splice::get<dropping::message_t>(*one));
   EXPECT_EQ(chat.body, "hi");
   EXPECT_TRUE(chat.payload.empty());
 }

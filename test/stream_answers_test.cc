@@ -1,6 +1,7 @@
 // The stream, against a scripted server: what the client writes, byte for
 // byte, what it reads, and how far it reads.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -66,7 +67,7 @@ TEST(Stream, TypedPayloads) {
   EXPECT_NE(written.find("id=\"v1\" type=\"result\"><query xmlns=\"jabber:iq:version\"><name>tern</name>"),
             std::string::npos)
       << written;
-  const auto& chat = std::get<tern::message::chat>(std::get<tern::message_t>(*one));
+  const auto& chat = splice::get<tern::message::chat>(splice::get<tern::message_t>(*one));
   EXPECT_EQ(chat.body, "hi");
   ASSERT_EQ(chat.payload.size(), 1u);
   EXPECT_EQ(chat.payload[0].as<chevron::any>().local, "active");  // no protocol type names it
@@ -117,8 +118,8 @@ TEST(Stream, FromChunks) {
     EXPECT_TRUE(session.try_request(tern::iq::get{.to = "example.com"}).has_value()) << size;
     const auto one = session.receive();
     ASSERT_TRUE(one.has_value()) << size;
-    const auto* message = std::get_if<tern::message_t>(&*one);
+    const auto* message = splice::get_if<tern::message_t>(&*one);
     ASSERT_NE(message, nullptr);
-    EXPECT_EQ(std::get<tern::message::chat>(*message).body, "\xd0\x9f\xd1\x80\xd0\xb8") << size;
+    EXPECT_EQ(splice::get<tern::message::chat>(*message).body, "\xd0\x9f\xd1\x80\xd0\xb8") << size;
   }
 }

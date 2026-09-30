@@ -2,6 +2,7 @@
 // while the main one reads, and the server answers only once both requests
 // have gone out.
 import std;
+import splice;
 import tern;
 import chevron;
 import gtest;
@@ -89,7 +90,7 @@ TEST(Stream, ParallelThreads) {
   one.join();
   two.join();
   ASSERT_TRUE(message.has_value());
-  EXPECT_EQ(std::get<tern::message::chat>(std::get<tern::message_t>(*message)).body, "after");
+  EXPECT_EQ(splice::get<tern::message::chat>(splice::get<tern::message_t>(*message)).body, "after");
   ASSERT_TRUE(first && first->has_value());
   ASSERT_TRUE(second && second->has_value());
   std::set<std::string> ids{(*first)->id, (*second)->id};
