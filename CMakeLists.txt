@@ -23,9 +23,8 @@ set(SPLICE_CONSTEXPR_STEPS 100000000 CACHE STRING
   "clang's -fconstexpr-steps for splice, as tern and its family set it")
 cme_declare_port(NAME splice PROVIDES splice
   GITHUB_REPOSITORY j4niwzis/splice
-  GIT_TAG 39bc67a00185f488c989d3c18b98e5995e4dc8dd
+  GIT_TAG f2c25443061ba5353720eccd0a9438793c2ea053
   LICENSE GPL-3.0-only
-  SYSTEM NEVER
   TARGETS splice)
 cme_options(splice "SPLICE_TESTS OFF")
 cme_find_package(splice REQUIRED)
@@ -37,18 +36,16 @@ cme_find_package(splice REQUIRED)
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG 29e716ec45db10407960cbe40294c18a270289c0
+  GIT_TAG 3019faec6c81fbd677736811308967672e7b9911
   LICENSE AGPL-3.0-only
-  SYSTEM NEVER
   TARGETS chevron)
 cme_options(chevron "CHEVRON_TESTS OFF")
 cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 902f701a1277335b228ca7252af9b6bf940468ac
+  GIT_TAG 6dc139f9590dc0d3ac1cc0e9748e67d7a1485480
   LICENSE AGPL-3.0-only
-  SYSTEM NEVER
   TARGETS alef)
 cme_options(alef "ALEF_TESTS OFF")
 # Of alef, what a JID needs: PRECIS for its parts and IDNA for its domain,
@@ -90,4 +87,34 @@ endif()
 if(TERN_EXAMPLES AND UNIX)
   add_executable(tern-live examples/live.cc)
   target_link_libraries(tern-live PRIVATE tern)
+endif()
+
+# ---- What this library is, said by the library; and installing it ----
+#
+# A consumer writes find_package(tern) and this says the rest: where it
+# comes from, what it needs, and what it produces -- installed beside the
+# library by cmake-everywhere, under share/cmake-everywhere/ports, so that a
+# prefix that has tern describes it too.
+if(COMMAND cme_declare_port)
+  cme_declare_port(
+    NAME tern
+    PROVIDES tern
+    VERSION ${PROJECT_VERSION}
+    GITHUB_REPOSITORY j4niwzis/tern
+    GIT_TAG main
+    LICENSE AGPL-3.0-only
+    DEPENDS splice chevron "alef[precis,idna]" "boost-pfr[modules]"
+    TARGETS tern::tern)
+endif()
+# The library, its module interface units -- a consumer compiles its own
+# binary interfaces from them -- and a package: find_package(tern) on a
+# machine that has it installed finds it there, by the names it has here
+# too, and what it needs again from the ports it came from.
+option(TERN_INSTALL "Install tern and its CMake package" ${PROJECT_IS_TOP_LEVEL})
+if(TERN_INSTALL)
+  set(tern_aliases "")
+  foreach(name IN ITEMS crypto sasl stream jid srv)
+    list(APPEND tern_aliases tern::${name} tern_${name})
+  endforeach()
+  cme_install_package(tern ALIASES ${tern_aliases})
 endif()

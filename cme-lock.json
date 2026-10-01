@@ -3,7 +3,7 @@
   "lock": 1,
   "ports": {
     "alef": {
-      "commit": "902f701a1277335b228ca7252af9b6bf940468ac",
+      "commit": "6dc139f9590dc0d3ac1cc0e9748e67d7a1485480",
       "url": "https://github.com/j4niwzis/alef.git"
     },
     "boost": {
@@ -14,24 +14,25 @@
     "boost-pfr": {
       "commit": "401385c240027423acbb1eb6dea2abe0043db5aa",
       "port": [
-        "2861b39aab8b9c03459c4acd7de49c9f61fea9458533254ee32f98b2b9d8b384"
+        "2861b39aab8b9c03459c4acd7de49c9f61fea9458533254ee32f98b2b9d8b384",
+        "2b4380abe420ff1f611371752523d2a3cc0e6ead69e43941869a137a61685b9a"
       ],
       "url": "https://github.com/boostorg/pfr.git",
       "version": "1.92.0"
     },
     "chevron": {
-      "commit": "29e716ec45db10407960cbe40294c18a270289c0",
+      "commit": "3019faec6c81fbd677736811308967672e7b9911",
       "url": "https://github.com/j4niwzis/chevron.git"
     },
     "cmake-everywhere": {
-      "version": "v0.2.5"
+      "version": "v0.2.23"
     },
     "googletest-modules": {
       "commit": "706920f1d230f0316d271466d8885735be3e300e",
       "url": "https://github.com/j4niwzis/googletest-modules.git"
     },
     "splice": {
-      "commit": "39bc67a00185f488c989d3c18b98e5995e4dc8dd",
+      "commit": "f2c25443061ba5353720eccd0a9438793c2ea053",
       "url": "https://github.com/j4niwzis/splice.git"
     }
   }
