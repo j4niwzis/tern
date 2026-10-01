@@ -2991,6 +2991,14 @@ class negotiation {
             return fail(connect_code::tls_required, "");
         }
       }
+      // Over a transport that can speak TLS, nothing goes on without it --
+      // not even SCRAM -- unless plain was chosen: a server, or anyone on the
+      // way, that leaves <starttls/> out of its features would otherwise have
+      // the login and the whole session in the clear (STARTTLS stripping).
+      if constexpr (tls_transport<transport_type>) {
+        if (!secured && !o_.plain_without_tls)
+          return fail(connect_code::tls_required, "the server offered no TLS");
+      }
       if (!authenticated_) {
         if (!offered->mechanisms)
           return fail(connect_code::no_mechanism, "none offered");

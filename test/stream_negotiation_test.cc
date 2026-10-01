@@ -274,3 +274,18 @@ TEST(Stream, FailureConditionAndKeepalives) {
     EXPECT_EQ(messages, 2u);
   }
 }
+
+// A transport that can speak TLS, and a server that leaves <starttls/> out
+// of its features -- as anyone on the way could: nothing is sent, not even
+// SCRAM, unless plain was chosen.
+TEST(Stream, NoTlsNoLogin) {
+  const std::string server =
+      server_header("s1") +
+      "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-256</mechanism>"
+      "</mechanisms></stream:features>";
+  scripted script{.data = server};
+  const auto session = tern::try_connect(script, rfc7677());
+  ASSERT_FALSE(session.has_value());
+  EXPECT_EQ(session.error().code, tern::connect_code::tls_required);
+  EXPECT_EQ(script.written.find("<auth"), std::string::npos) << script.written;
+}
