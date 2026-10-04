@@ -17,7 +17,7 @@ for (auto&& stanza : session.stanzas()) {     // ends where the server ends the 
     report(stanza.error());
     break;
   }
-  std::visit(handle, *stanza);                  // message, presence or iq
+  splice::visit(handle, *stanza);               // message, presence or iq
 }
 session.send(tern::message::chat{.to = "romeo@example.net", .body = "hi"});
 ```
@@ -77,7 +77,7 @@ Each kind of stanza is a type of its own, with what that kind can carry:
 `tern::message::chat`, `tern::message::groupchat`, … `tern::presence::subscribe`,
 … `tern::iq::get`, `tern::iq::set`, `tern::iq::result`, `tern::iq::error`.
 `tern::message_t`, `tern::presence_t` and `tern::iq_t` are the variants of
-each, `tern::stanza_t` the variant of those, and `std::visit` tells them
+each, `tern::stanza_t` the variant of those, and `splice::visit` tells them
 apart. The error kinds carry their `<error/>` parsed, as `reason`: its type
 (cancel, continue, modify, auth, wait), its condition as a type of its own
 (`what`, a `chevron::tagged` of `tern::conditions::service_unavailable` and the
@@ -178,6 +178,46 @@ query no handler takes is refused with service-unavailable (RFC 6120,
 Every call that can fail comes in two forms, as in scan: `connect`, `receive`
 and `request` throw; `try_connect`, `try_receive` and `try_request` hand a
 `std::expected` back.
+
+## Streaming writes and buffer limits
+
+`session.try_send(stanza)` returns `std::expected<void, connect_error>`;
+`send(stanza)` throws `connect_failure` on the same errors. Without stream
+management, XML is written incrementally: small markup and escape fragments
+share a 4 KiB buffer, while large text runs are borrowed directly. With stream
+management, the encoded stanza is retained until acknowledged. A transport's
+`write(string_view)` must consume or copy the bytes before returning;
+`flush()` is called once at the end of the stanza.
+
+`options::buffers` configures retained state, with these defaults:
+
+| Buffer | Default |
+| --- | ---: |
+| Pending stanzas for `receive()` | 1,024 |
+| Shared inbox log, including values currently held by inboxes | 4,096 |
+| Requests in flight | 256 |
+| Recent cancelled request IDs | 1,024 |
+| Unacknowledged outgoing stanzas | 1,024 |
+| Encoded bytes of unacknowledged outgoing stanzas | 16 MiB |
+
+Zero permits no entries in that buffer. These are counts of values except
+for the explicit byte limit; they do not bound the size of an individual
+incoming stanza or the allocator's overhead.
+
+A full outgoing buffer returns `connect_code::resource_limit` before any
+part of that stanza is written. Read acknowledgments and retry. A full
+request table likewise rejects the new request without sending it. IDs
+already in flight or retained as cancellations return `request_conflict`.
+Cancellation history evicts the oldest IDs when full; replies older than
+that window are delivered as unsolicited stanzas.
+
+An incoming stanza that exceeds a pending or inbox limit stops the session
+with `resource_limit` and wakes its waiters. Already queued values remain
+available before that error is returned. The session is no longer resumable,
+because the stanza that did not fit must not be acknowledged as handled.
+An acknowledgment beyond the sent stanza count is `invalid_ack` and also
+disables resumption. Valid control elements are processed before waiting
+for more input, including when the peer sends `<r/>` and waits for `<a/>`.
 
 ## The roster
 

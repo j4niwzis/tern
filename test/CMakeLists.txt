@@ -34,12 +34,13 @@ endif()
 add_executable(tern-sasl-test sasl_test.cc)
 target_link_libraries(tern-sasl-test PRIVATE tern ${tern_gtest})
 add_test(NAME sasl COMMAND tern-sasl-test)
-# Three files, one binary: each compiles in the memory of a small machine.
+# Several files, one binary: each compiles in the memory of a small machine.
 add_executable(tern-stream-test stream_negotiation_test.cc stream_requests_test.cc stream_answers_test.cc
   stream_im_test.cc stream_park_test.cc stream_threads_test.cc stream_inbox_test.cc stream_conditions_test.cc
-  stream_xep_test.cc)
+  stream_xep_test.cc stream_flow_test.cc)
 target_link_libraries(tern-stream-test PRIVATE tern ${tern_gtest})
 add_test(NAME stream COMMAND tern-stream-test)
+set_tests_properties(stream PROPERTIES TIMEOUT 60)
 add_executable(tern-jid-test jid_test.cc)
 target_link_libraries(tern-jid-test PRIVATE tern ${tern_gtest})
 add_test(NAME jid COMMAND tern-jid-test)

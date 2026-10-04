@@ -1334,6 +1334,9 @@ enum class connect_code : std::uint8_t {
   tls_failed,        // the transport could not start TLS
   malformed_stanza,  // a stanza did not fit its type: passed over, and the stream goes on
   resume_failed,     // the server would not resume the stream (XEP-0198)
+  resource_limit,    // a configured session buffer limit was reached
+  request_conflict,  // an id is already in flight or awaiting a late reply
+  invalid_ack,       // acknowledgment exceeds the stanzas sent
 };
 
 // A stanza that could not be read into its type: what it was, whose, and
@@ -1414,6 +1417,18 @@ class range_transport {
   Out output_;
 };
 
+// Counts of retained values, plus a byte bound on serialized retransmissions.
+// Zero allows no entries in that buffer. Raise these explicitly for workloads
+// needing more; a slow consumer must not retain an unbounded session history.
+struct buffer_limits {
+  std::size_t pending_stanzas = 1024;
+  std::size_t inbox_stanzas = 4096;
+  std::size_t requests = 256;
+  std::size_t abandoned_requests = 1024;
+  std::size_t unacked_stanzas = 1024;
+  std::size_t unacked_bytes = 16 * 1024 * 1024;
+};
+
 struct options {
   std::string username;  // the localpart, prepared
   std::string domain;
@@ -1436,6 +1451,7 @@ struct options {
   bool deliver_unhandled = false;
   // The language of what this client says (RFC 6120, 4.7.4), on its stream.
   std::string lang = "en";
+  buffer_limits buffers{};
 };
 
 // The handlers of incoming queries, given at connect(): each a callable
@@ -1703,6 +1719,7 @@ class source {
     end_.emplace(std::ranges::end(range));
     parser_ = chevron::parser();
     finished_ = false;
+    chunk_fed_ = false;
     depth_ = 0;
     piece_.clear();
   }
@@ -1738,13 +1755,16 @@ class source {
       if (finished_)
         return one;
       if constexpr (chunks) {
-        // A chunk -- what a read of a socket brought -- fed whole.
+        // Incrementing an input iterator may fetch the next chunk. Defer
+        // it until the parser needs more bytes, so control replies and TLS
+        // upgrades happen before that fetch can block.
+        if (chunk_fed_) { ++*at_; chunk_fed_ = false; }
         if (*at_ == *end_) {
           parser_.finish();
           finished_ = true;
         } else {
           parser_.feed(**at_);
-          ++*at_;
+          chunk_fed_ = true;
         }
       } else {
         // The end is asked about only where a byte is needed: over a socket,
@@ -1813,6 +1833,7 @@ class source {
   std::optional<sentinel> end_;
   chevron::parser parser_;
   bool finished_ = false;
+  bool chunk_fed_ = false;
 };
 
 constexpr std::string escaped(std::string_view text) {
@@ -1906,8 +1927,9 @@ class session {
   using request_error = basic_request_error<typename P::stanza_error>;
   using request_failure = basic_request_failure<typename P::stanza_error>;
 
-  constexpr session(T transport, Handlers handlers, Scheduler scheduler)
-      : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), scheduler_(std::move(scheduler)) {
+  constexpr session(T transport, Handlers handlers, Scheduler scheduler, buffer_limits limits = {})
+      : transport_(static_cast<T&&>(transport)), handlers_(std::move(handlers)), scheduler_(std::move(scheduler)),
+        limits_(limits) {
     source_.start(transport_.input());
   }
 
@@ -2033,7 +2055,10 @@ class session {
   template <iq_request Question>
   constexpr outcome try_request(Question question) {
     [[maybe_unused]] auto held = hold();
-    const std::string id = start(std::move(question));
+    auto started = start(std::move(question));
+    if (!started)
+      return std::unexpected(request_error{request_code::connection, std::move(started).error(), std::nullopt});
+    const std::string id = std::move(*started);
     detail::on_exit forget{[this, &id] { abandon(id); }};
     for (;;) {
       if (auto done = finished(id))
@@ -2130,17 +2155,56 @@ class session {
   // receive() only.
   constexpr inbox open_inbox(std::optional<std::string> from = {}) { return inbox(*this, std::move(from)); }
 
-  // A stanza, written to the transport, and flushed.
-  // With stream management, it is kept until the server acknowledges it.
+  // Each chunk is consumed by write() before it returns; flush() ends the
+  // stanza. Stream management retains one encoded copy for retransmission.
+  // Capacity errors happen before writing any part of that managed stanza.
+  template <chevron::described Stanza>
+  constexpr std::expected<void, connect_error> try_send(const Stanza& one) {
+    [[maybe_unused]] auto held = hold();
+    if (failed_) return std::unexpected(*failed_);
+    auto xml = chevron::to_xml(one);
+    if (!sm_enabled_) {
+      // Coalesce markup and escape fragments without buffering the stanza.
+      // Large borrowed runs go straight to the transport.
+      std::array<char, 4096> buffer{};
+      std::size_t used = 0;
+      const auto flush = [&] {
+        if (used) transport_.write(std::string_view(buffer.data(), std::exchange(used, 0)));
+      };
+      for (const auto chunk : xml.chunks()) {
+        if (chunk.size() >= buffer.size()) {
+          flush();
+          transport_.write(chunk);
+        } else {
+          if (chunk.size() > buffer.size() - used) flush();
+          std::ranges::copy(chunk, buffer.begin() + used);
+          used += chunk.size();
+        }
+      }
+      flush();
+    } else {
+      if (unacked_.size() >= limits_.unacked_stanzas)
+        return capacity("unacknowledged stanzas");
+      const std::size_t available = limits_.unacked_bytes - unacked_bytes_;
+      out_.clear();
+      for (const auto chunk : xml.chunks()) {
+        if (chunk.size() > available - out_.size()) {
+          out_.clear();
+          return capacity("unacknowledged bytes");
+        }
+        out_.append(chunk);
+      }
+      unacked_.push_back(out_);
+      unacked_bytes_ += out_.size();
+      transport_.write(out_);
+    }
+    transport_.flush();
+    return {};
+  }
+
   template <chevron::described Stanza>
   constexpr void send(const Stanza& one) {
-    [[maybe_unused]] auto held = hold();
-    out_.clear();
-    chevron::write(std::back_inserter(out_), one);
-    if (sm_enabled_)
-      unacked_.push_back(out_);
-    transport_.write(out_);
-    transport_.flush();
+    if (auto sent = try_send(one); !sent) throw connect_failure(std::move(sent).error());
   }
 
   // Ends the stream from this side (RFC 6120, 4.4). What the server sends
@@ -2268,15 +2332,27 @@ class session {
   }
   // A stream resumed: the old one's count, and what it had not had
   // acknowledged sent again.
-  constexpr void resumed_from(const sm_state& state, std::uint32_t h) {
+  constexpr std::expected<void, connect_error> resumed_from(const sm_state& state, std::uint32_t h) {
+    const auto handled = static_cast<std::uint32_t>(h - state.acked);
+    if (handled > state.unacked.size())
+      return std::unexpected(connect_error{connect_code::invalid_ack, "resume acknowledgment", std::nullopt});
+    if (state.unacked.size() - handled > limits_.unacked_stanzas)
+      return capacity("unacknowledged stanzas");
+    std::size_t bytes = 0;
+    for (std::size_t i = handled; i < state.unacked.size(); ++i) {
+      if (state.unacked[i].size() > limits_.unacked_bytes - bytes)
+        return capacity("unacknowledged bytes");
+      bytes += state.unacked[i].size();
+    }
     sm_enabled_ = true;
     sm_id_ = state.id;
     inbound_ = state.inbound;
-    acked_ = state.acked;
-    unacked_.assign(state.unacked);
-    acknowledged(h);
+    acked_ = h;
+    unacked_bytes_ = bytes;
+    for (std::size_t i = handled; i < state.unacked.size(); ++i) unacked_.push_back(state.unacked[i]);
     unacked_.for_each([&](const std::string& again) { transport_.write(again); });
     transport_.flush();
+    return {};
   }
 
  private:
@@ -2289,11 +2365,44 @@ class session {
 
   // The server has handled h stanzas of ours: those are dropped.
   constexpr void acknowledged(std::uint32_t h) {
-    while (acked_ != h && !unacked_.empty()) {
+    const auto count = static_cast<std::uint32_t>(h - acked_);
+    if (count > unacked_.size()) {
+      fail_session({connect_code::invalid_ack, "acknowledgment exceeds sent stanzas", std::nullopt});
+      return;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+      unacked_bytes_ -= unacked_.front().size();
       unacked_.pop_front();
-      ++acked_;
+    }
+    acked_ = h;
+  }
+
+  static constexpr std::unexpected<connect_error> capacity(std::string_view buffer) {
+    return std::unexpected(connect_error{connect_code::resource_limit, std::string(buffer), std::nullopt});
+  }
+
+  // Incoming data cannot be silently discarded and then acknowledged on
+  // resume. Preserve queued values, stop routing, and wake every waiter.
+  constexpr void fail_session(connect_error error) {
+    if (!failed_) failed_ = std::move(error);
+    if (failed_->code == connect_code::resource_limit || failed_->code == connect_code::invalid_ack)
+      sm_id_.clear();
+    for (auto& entry : waiting_) wake(entry.second);
+    if constexpr (concurrent) {
+      for (inbox* one : inboxes_)
+        if (one->waiter_) scheduler_.wake(*std::exchange(one->waiter_, std::nullopt));
+      if (receiver_waiting_) scheduler_.wake(*std::exchange(receiver_waiting_, std::nullopt));
     }
   }
+
+  constexpr void queue_pending(std::expected<stanza_t, connect_error> one) {
+    if (pending_.size() >= limits_.pending_stanzas) {
+      fail_session(capacity("pending stanzas").error());
+      return;
+    }
+    pending_.push_back(std::move(one));
+  }
+
 
   // What tern answers itself, where no handler took the query: disco (with
   // this client's info, for its caps node too), and ping.
@@ -2317,19 +2426,43 @@ class session {
 
   // A request sent, and its slot made: its id.
   template <iq_request Question>
-  constexpr std::string start(Question question) {
-    if (question.id.empty())
-      question.id = "tern-" + detail::decimal(++last_id_);
+  constexpr std::expected<std::string, connect_error> start(Question question) {
+    if (failed_) return std::unexpected(*failed_);
+    if (waiting_.size() >= limits_.requests) return capacity("requests in flight");
+    const auto occupied = [&](const std::string& id) {
+      bool abandoned = false;
+      abandoned_.for_each([&](const std::string& old) { abandoned |= old == id; });
+      return waiting_.contains(id) || abandoned;
+    };
+    if (question.id.empty()) {
+      do { question.id = "tern-" + detail::decimal(++last_id_); } while (occupied(question.id));
+    } else if (occupied(question.id)) {
+      return std::unexpected(connect_error{connect_code::request_conflict, question.id, std::nullopt});
+    }
     std::string id = question.id;
-    waiting_[id] = slot{question.to, std::nullopt};
-    send(question);
+    waiting_.emplace(id, slot{question.to, std::nullopt});
+    bool sent = false;
+    detail::on_exit rollback{[&] { if (!sent) waiting_.erase(id); }};
+    if (auto written = try_send(question); !written) return std::unexpected(std::move(written).error());
+    sent = true;
     return id;
   }
 
-  // A request given up: its slot freed, its answer to be dropped.
+  // Keep a bounded history of cancellations. A reply older than this window
+  // is an unsolicited stanza, rather than retaining tombstones forever.
   constexpr void abandon(const std::string& id) {
-    if (waiting_.erase(id) > 0)
-      abandoned_.insert(id);
+    if (waiting_.erase(id) == 0 || limits_.abandoned_requests == 0) return;
+    if (abandoned_.size() >= limits_.abandoned_requests) abandoned_.pop_front();
+    abandoned_.push_back(id);
+  }
+  constexpr bool drop_abandoned(const std::string& id) {
+    bool found = false;
+    abandoned_.remove_if([&](const std::string& old) {
+      if (old != id) return false;
+      found = true;
+      return true;
+    });
+    return found;
   }
 
   // What the request came to, where it has come to something; its slot
@@ -2391,10 +2524,15 @@ class session {
     auto one = read_locked();
     if (!one) {
       if (one.error().code == connect_code::malformed_stanza && !settled(*one.error().malformed))
-        pending_.push_back(std::unexpected(one.error()));
+        queue_pending(std::unexpected(one.error()));
     } else if (*one) {
-      if (!claimed(**one) && !dispatched(**one))
-        hand_out(std::move(**one));
+      try {
+        if (!claimed(**one) && !dispatched(**one)) hand_out(std::move(**one));
+      } catch (const connect_failure& failed) {
+        // An automatic reply can hit the outgoing limit too. Report it
+        // through try_receive/try_request and wake their other waiters.
+        fail_session(failed.error);
+      }
     }
   }
 
@@ -2403,14 +2541,19 @@ class session {
   // each inbox open. Copied only where both want it.
   constexpr void hand_out(stanza_t one) {
     const bool to_receive = inboxes_.empty() || receiving_ || archiving_ > 0;
+    if ((to_receive && pending_.size() >= limits_.pending_stanzas) ||
+        (!inboxes_.empty() && log_.size() >= limits_.inbox_stanzas)) {
+      fail_session(capacity(to_receive && pending_.size() >= limits_.pending_stanzas
+                                ? "pending stanzas" : "inbox stanzas").error());
+      return;
+    }
     if (!inboxes_.empty()) {
       logged entry{.seq = next_seq_++, .from = {}, .stanza = nullptr};
       if (const auto from = from_of(one))
         entry.from = bare_of(*from);
       entry.stanza = to_receive ? std::make_unique<stanza_t>(one) : std::make_unique<stanza_t>(std::move(one));
-      const std::string& from = entry.from;
       log_.push_back(std::move(entry));
-      wake_inboxes(from);
+      wake_inboxes(log_.at(log_.size() - 1).from);
     }
     if (to_receive) {
       pending_.push_back(std::move(one));
@@ -2498,7 +2641,7 @@ class session {
     if (bad.type == "result" || bad.type == "error") {
       const auto found = waiting_.find(bad.id);
       if (found == waiting_.end())
-        return abandoned_.erase(bad.id) > 0;  // its request is gone: dropped
+        return drop_abandoned(bad.id);  // its request is gone: dropped
       if (found->second.answer || found->second.malformed)
         return false;
       if (found->second.to && bad.from != found->second.to)
@@ -2529,30 +2672,23 @@ class session {
     reading_ = true;
     detail::on_exit done_reading{[this] { reading_ = false; }};
     std::expected<std::optional<stanza_t>, connect_error> one;
-    {
-      [[maybe_unused]] auto away = release();  // others send and park while this waits for bytes
-      one = read_stanza();
+    for (;;) {
+      {
+        [[maybe_unused]] auto away = release();  // others send while this waits for bytes
+        one = read_one_stanza();
+      }
+      const bool control = std::exchange(acks_read_, false);
+      apply_acks();  // under the turn, before waiting for another byte
+      if (failed_) return std::unexpected(*failed_);
+      if (!control) break;
     }
-    apply_acks();
     if (sm_enabled_ && ((one && *one) || (!one && one.error().code == connect_code::malformed_stanza)))
       ++inbound_;
     if (!one && one.error().code != connect_code::malformed_stanza) {
-      failed_ = one.error();
+      fail_session(one.error());
     } else if (one && !*one) {
-      failed_ = connect_error{connect_code::closed, "", std::nullopt};
       ended_ = true;
-    }
-    // The stream over: every coroutine parked on a request hears it.
-    if (failed_) {
-      for (auto& entry : waiting_)
-        wake(entry.second);
-      if constexpr (concurrent) {
-        for (inbox* waiting : inboxes_)
-          if (waiting->waiter_)
-            scheduler_.wake(*std::exchange(waiting->waiter_, std::nullopt));
-        if (receiver_waiting_)
-          scheduler_.wake(*std::exchange(receiver_waiting_, std::nullopt));
-      }
+      fail_session({connect_code::closed, "", std::nullopt});
     }
     return one;
   }
@@ -2646,7 +2782,7 @@ class session {
           if constexpr (std::same_as<type, result> || std::same_as<type, error>) {
             const auto found = waiting_.find(answer.id);
             if (found == waiting_.end())
-              return abandoned_.erase(answer.id) > 0;  // its request is gone: dropped
+              return drop_abandoned(answer.id);  // its request is gone: dropped
             if (found->second.answer || found->second.malformed)
               return false;
             if (found->second.to && answer.from != found->second.to)
@@ -2659,17 +2795,6 @@ class session {
           }
         },
         *kind);
-  }
-
-  constexpr std::expected<std::optional<stanza_t>, connect_error> read_stanza() {
-    for (;;) {
-      auto one = read_one_stanza();
-      if (one && !*one && acks_read_) {
-        acks_read_ = false;
-        continue;
-      }
-      return one;
-    }
   }
 
   // One stanza; XEP-0198's <r/> answered and <a/> taken on the way, and each
@@ -2730,6 +2855,7 @@ class session {
   Handlers handlers_;
   mutable Scheduler scheduler_;
   detail::source<std::remove_reference_t<decltype(std::declval<transport_type&>().input())>> source_;
+  buffer_limits limits_{};
   std::string out_;
   std::string jid_;
   bool roster_versioning_ = false;
@@ -2764,7 +2890,7 @@ class session {
     if (acked_h_)
       acknowledged(*std::exchange(acked_h_, std::nullopt));
     for (; acks_asked_ > 0; --acks_asked_)
-      if (sm_enabled_)
+      if (sm_enabled_ && !failed_)
         write_raw("<a xmlns='urn:xmpp:sm:3' h='" + detail::decimal(inbound_) + "'/>");
   }
 
@@ -2796,7 +2922,7 @@ class session {
   bool ended_ = false;
   std::optional<std::uint32_t> acked_h_;
   std::uint32_t acks_asked_ = 0;
-  std::set<std::string> abandoned_;                    // requests whose coroutine is gone
+  detail::queue<std::string> abandoned_;  // bounded cancellation history
   std::optional<typename Scheduler::handle> reader_;  // the coroutine that reads
   disco::info self_;
   std::string caps_node_;
@@ -2805,6 +2931,7 @@ class session {
   std::uint32_t inbound_ = 0;
   std::uint32_t acked_ = 0;
   detail::queue<std::string> unacked_;
+  std::size_t unacked_bytes_ = 0;
 };
 
 template <class T, class P, class Handlers, class Scheduler>
@@ -3238,9 +3365,10 @@ constexpr std::expected<Session, connect_error> establish(Session s, const optio
   s.deliver_unhandled(how.deliver_unhandled);
   s.describes_itself(how);
   s.adopt_reader();
-  if (resume)
-    s.resumed_from(*resume, steps.resumed_h);
-  else if (steps.enabled)
+  if (resume) {
+    if (auto restored = s.resumed_from(*resume, steps.resumed_h); !restored)
+      return std::unexpected(std::move(restored).error());
+  } else if (steps.enabled)
     s.stream_managed(*steps.enabled);
   return s;
 }
@@ -3257,7 +3385,8 @@ export namespace tern {
 template <class P = standard, transport T, class Handlers = answering<>, class Scheduler = no_scheduler>
 constexpr std::expected<session<T&, P, Handlers, Scheduler>, connect_error>
 try_connect(T& transport, const options& how, Handlers handlers = {}, Scheduler scheduler = {}) {
-  return detail::establish(session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler)), how);
+  return detail::establish(
+      session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler), how.buffers), how);
 }
 
 // XEP-0198: a stream taken up again over a new transport, from what
@@ -3266,8 +3395,8 @@ try_connect(T& transport, const options& how, Handlers handlers = {}, Scheduler 
 template <class P = standard, transport T, class Handlers = answering<>, class Scheduler = no_scheduler>
 constexpr std::expected<session<T&, P, Handlers, Scheduler>, connect_error>
 try_resume(T& transport, const options& how, const sm_state& state, Handlers handlers = {}, Scheduler scheduler = {}) {
-  return detail::establish(session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler)), how,
-                           &state);
+  return detail::establish(
+      session<T&, P, Handlers, Scheduler>(transport, std::move(handlers), std::move(scheduler), how.buffers), how, &state);
 }
 
 // The same over a range of bytes (or of chunks), read as far as each step
@@ -3279,7 +3408,7 @@ constexpr std::expected<session<range_transport<Input, Out>, P, Handlers, Schedu
 try_connect(Input& input, Out output, const options& how, Handlers handlers = {}, Scheduler scheduler = {}) {
   return detail::establish(session<range_transport<Input, Out>, P, Handlers, Scheduler>(
                                range_transport<Input, Out>(input, std::move(output)), std::move(handlers),
-                               std::move(scheduler)),
+                               std::move(scheduler), how.buffers),
                            how);
 }
 

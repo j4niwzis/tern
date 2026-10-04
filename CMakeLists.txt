@@ -36,7 +36,7 @@ cme_find_package(splice REQUIRED)
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG 3019faec6c81fbd677736811308967672e7b9911
+  GIT_TAG bbc3e0d2a2b67f1cd039c582ef131bafa2d81348
   LICENSE AGPL-3.0-only
   TARGETS chevron)
 cme_options(chevron "CHEVRON_TESTS OFF")
