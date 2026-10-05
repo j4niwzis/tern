@@ -61,3 +61,15 @@ What the RFCs require only of servers is left out.
 | 4.5 | Unavailable presence before closing the stream | done: `close()` sends it where presence was sent | `Stream.PresenceAndSubscriptions` |
 | 5.2.2 | Message types: chat, groupchat, headline, normal, error | done | `Stream.ScramBindAndStanzas` |
 | 5.2.3, 5.2.5 | `<subject/>` and `<thread/>` (with `parent`) | done: members `subject` and `thread` of every message type | `Stream.SubjectAndThread` |
+
+## XEP-0077: In-Band Registration
+
+| § | Requirement | Status | Test |
+| --- | --- | --- | --- |
+| 3.1 | The fields asked for with a get, before authentication, and answered with a set | done: `options::create`, after TLS and before SASL; over plain text only with `plain_without_tls` | `Stream.RegistrationAnswered` |
+| 3.1 | The old fields: each one listed is required | done: username and password from the options, any other from the answers | |
+| 4 | A data form (XEP-0004) in place of the old fields | done: every field with a var sent back, answered or as the form held it; one required and left empty hands the form back (`connect_code::registration_asks`, `connect_error::registration`) | `Stream.RegistrationAsksMore` |
+| 5 | A page to register on (XEP-0066) | done: handed back in `registration::asked::page` | |
+| 3.1 | Errors: conflict, not-acceptable and the rest | done: `connect_code::registration_refused`, the stanza error whole | |
+
+XEP-0158 (CAPTCHA forms), XEP-0221 (media) and XEP-0231 (bits of binary): the form's fields keep their labels, descriptions, options and media, and the data sent with the form is kept by its cid, so whatever kind of captcha the server uses is shown by the caller and answered as a field.

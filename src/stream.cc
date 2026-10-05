@@ -787,26 +787,128 @@ constexpr auto xml_schema(chevron::type<set>) {
 }
 }  // namespace rsm
 
-// XEP-0004: a data form, as far as a query's filter needs.
+// XEP-0004: a data form -- a query's filter, and what a server asks, as
+// registering (XEP-0077) does.
 namespace data_form {
+inline constexpr std::string_view form_namespace = "jabber:x:data";
+inline constexpr std::string_view media_namespace = "urn:xmpp:media-element";
+struct required_flag {};
+constexpr auto xml_schema(chevron::type<required_flag>) {
+  return chevron::schema<required_flag>().name(form_namespace, "required");
+}
+// One of a list's choices: what it says, and what it sends.
+struct option {
+  std::optional<std::string> label;
+  std::string value;
+};
+constexpr auto xml_schema(chevron::type<option>) {
+  using namespace chevron::members;
+  return chevron::schema<option>().name(form_namespace, "option").members(attribute(), child_text());
+}
+// XEP-0221: where a field's picture or sound is -- a cid: of XEP-0231's
+// data sent with the form, or an address -- and of what type.
+struct uri {
+  std::string type;
+  std::string location;
+};
+constexpr auto xml_schema(chevron::type<uri>) {
+  using namespace chevron::members;
+  return chevron::schema<uri>().name(media_namespace, "uri").members(attribute(), text());
+}
+struct media {
+  std::vector<data_form::uri> uri;
+};
+constexpr auto xml_schema(chevron::type<media>) {
+  using namespace chevron::members;
+  return chevron::schema<media>().name(media_namespace, "media").members(child("uri", media_namespace));
+}
 struct field {
   std::optional<std::string> var;
   std::optional<std::string> type;
   std::vector<std::string> value;
+  std::optional<std::string> label = {};
+  std::optional<std::string> desc = {};
+  std::optional<required_flag> required = {};
+  std::vector<data_form::option> options = {};
+  std::optional<data_form::media> media = {};
 };
 constexpr auto xml_schema(chevron::type<field>) {
   using namespace chevron::members;
-  return chevron::schema<field>().name("jabber:x:data", "field").members(attribute(), attribute(), child_text());
+  return chevron::schema<field>()
+      .name(form_namespace, "field")
+      .members(attribute(), attribute(), child_text(), attribute(), child_text(), child("required"), child("option"),
+               child("media", media_namespace));
 }
 struct form {
   std::string type;
   std::vector<data_form::field> fields;
+  std::optional<std::string> title = {};
+  std::vector<std::string> instructions = {};
 };
 constexpr auto xml_schema(chevron::type<form>) {
   using namespace chevron::members;
-  return chevron::schema<form>().name("jabber:x:data", "x").members(attribute(), child("field"));
+  return chevron::schema<form>()
+      .name(form_namespace, "x")
+      .members(attribute(), child("field"), child_text(), child_text());
 }
 }  // namespace data_form
+
+// XEP-0231: data sent along, named by its cid -- a captcha's picture.
+namespace bob {
+struct data {
+  std::string cid;
+  std::optional<std::string> type;
+  std::string base64;
+};
+constexpr auto xml_schema(chevron::type<data>) {
+  using namespace chevron::members;
+  return chevron::schema<data>().name("urn:xmpp:bob", "data").members(attribute(), attribute(), text());
+}
+}  // namespace bob
+
+// XEP-0077: an account made on the stream, before signing in with it --
+// what the server asks for: the old fields, or a form (XEP-0004, with a
+// captcha as XEP-0158 has it), or a page to make it on (XEP-0066).
+namespace registration {
+inline constexpr std::string_view register_namespace = "jabber:iq:register";
+struct registered_flag {};
+constexpr auto xml_schema(chevron::type<registered_flag>) {
+  return chevron::schema<registered_flag>().name(register_namespace, "registered");
+}
+struct page {
+  std::optional<std::string> url;
+  std::optional<std::string> desc;
+};
+constexpr auto xml_schema(chevron::type<page>) {
+  using namespace chevron::members;
+  return chevron::schema<page>().name("jabber:x:oob", "x").members(child_text(), child_text());
+}
+struct asked {
+  std::optional<std::string> instructions;
+  std::optional<registered_flag> registered;
+  // The old fields, each asked where present; email the one beyond the
+  // account's own two that servers ask most.
+  std::optional<std::string> username;
+  std::optional<std::string> password;
+  std::optional<std::string> email;
+  std::optional<data_form::form> form;
+  std::optional<registration::page> page;
+  std::vector<bob::data> data;
+};
+constexpr auto xml_schema(chevron::type<asked>) {
+  using namespace chevron::members;
+  return chevron::schema<asked>()
+      .name(register_namespace, "query")
+      .members(child_text(), child("registered"), child_text(), child_text(), child_text(),
+               child("x", data_form::form_namespace), child("x", "jabber:x:oob"), child("data", "urn:xmpp:bob"));
+}
+// The answers to what a server asks beyond the username and the password:
+// each a field's var -- an old field's name -- and its value.
+struct answer {
+  std::string var;
+  std::string value;
+};
+}  // namespace registration
 
 // XEP-0313: the archive of one's messages, asked for a page at a time.
 namespace mam {
@@ -1337,6 +1439,8 @@ enum class connect_code : std::uint8_t {
   resource_limit,    // a configured session buffer limit was reached
   request_conflict,  // an id is already in flight or awaiting a late reply
   invalid_ack,       // acknowledgment exceeds the stanzas sent
+  registration_asks,     // the server asks more than was answered: see registration
+  registration_refused,  // the server would not make the account: see stanza
 };
 
 // A stanza that could not be read into its type: what it was, whose, and
@@ -1361,6 +1465,11 @@ struct connect_error {
   std::optional<stanza_error> stanza{};
   // With malformed_stanza: the stanza, which the stream has gone on after.
   std::optional<malformed_stanza> malformed{};
+  // With registration_asks: what the server asks, whole -- its form, the
+  // pictures it names, the page to make the account on. Connecting again
+  // with the answers, by the form's vars, makes it; a captcha's challenge,
+  // a hidden field, is answered with this one's where it is given.
+  std::optional<registration::asked> registration{};
 };
 
 // What the TLS layer gives for channel binding: the type and its data.
@@ -1452,6 +1561,9 @@ struct options {
   // The language of what this client says (RFC 6120, 4.7.4), on its stream.
   std::string lang = "en";
   buffer_limits buffers{};
+  // XEP-0077: make the account first, with the username and the password,
+  // and these answers to what else the server asks.
+  std::optional<std::vector<registration::answer>> create = {};
 };
 
 // The handlers of incoming queries, given at connect(): each a callable
@@ -3126,6 +3238,13 @@ class negotiation {
         if (!secured && !o_.plain_without_tls)
           return fail(connect_code::tls_required, "the server offered no TLS");
       }
+      if (o_.create && !registered_) {
+        if (!secured && !o_.plain_without_tls)
+          return fail(connect_code::tls_required, "to register");
+        if (auto made = register_account(*o_.create); !made)
+          return made;
+        registered_ = true;
+      }
       if (!authenticated_) {
         if (!offered->mechanisms)
           return fail(connect_code::no_mechanism, "none offered");
@@ -3349,10 +3468,105 @@ class negotiation {
     return {};
   }
 
+  // XEP-0077, 3.1: what the server asks, then the answers -- the form's
+  // fields filled where it sent one, else the old fields.
+  constexpr std::expected<void, connect_error> register_account(const std::vector<registration::answer>& answers) {
+    write("<iq type='get' id='register_1'><query xmlns='" + std::string(registration::register_namespace) +
+          "'/></iq>");
+    auto read = chevron::read_one_of<basic::iq_result<chevron::tagged<registration::asked, chevron::any>>,
+                                     basic::iq_error<chevron::tagged<chevron::any>, stanza_error>>(s_.source());
+    if (!read)
+      return fail(connect_code::xml, "register: " + read.error().where);
+    if (const auto* refused = splice::get_if<1>(&*read))
+      return refusal(refused->reason);
+    const auto& answer = splice::get<0>(*read);
+    const registration::asked* asked =
+        answer.payload.empty() ? nullptr : answer.payload.front().template get_if<registration::asked>();
+    if (!asked)
+      return fail(connect_code::registration_refused, "no registration offered");
+    const auto given = [&](std::string_view var) -> std::optional<std::string> {
+      if (var == "username")
+        return o_.username;
+      if (var == "password")
+        return o_.password;
+      const auto found = std::ranges::find(answers, var, &registration::answer::var);
+      if (found == answers.end())
+        return std::nullopt;
+      return found->value;
+    };
+    const auto asks_more = [&] {
+      return std::unexpected(connect_error{.code = connect_code::registration_asks,
+                                           .detail = asked->instructions.value_or(""),
+                                           .sasl = std::nullopt,
+                                           .registration = *asked});
+    };
+    std::string request;
+    if (asked->form) {
+      // Each field with a var sent back: its answer, else what the form
+      // holds; one required and left empty is asked of the caller.
+      const auto filled = [&](const data_form::field& one) {
+        return given(*one.var).transform([](std::string value) { return std::vector{std::move(value)}; })
+            .value_or(one.value);
+      };
+      // Not const: a filter is walked through itself, which keeps where it begins.
+      auto sent = asked->form->fields |
+                        std::views::filter([](const data_form::field& one) {
+                          return one.var.has_value() && one.type != std::optional<std::string>("fixed");
+                        });
+      const bool missing = std::ranges::any_of(sent, [&](const data_form::field& one) {
+        return one.required && std::ranges::all_of(filled(one), [](const std::string& value) { return value.empty(); });
+      });
+      if (missing)
+        return asks_more();
+      const auto field_sent = [&](const data_form::field& one) {
+        return "<field var='" + escaped(*one.var) + "'>" +
+               (filled(one) |
+                std::views::transform([](const std::string& value) { return "<value>" + escaped(value) + "</value>"; }) |
+                std::views::join | std::ranges::to<std::string>()) +
+               "</field>";
+      };
+      request = "<x xmlns='" + std::string(data_form::form_namespace) + "' type='submit'>" +
+                (sent | std::views::transform(field_sent) | std::views::join | std::ranges::to<std::string>()) + "</x>";
+    } else if (asked->username || asked->password) {
+      // The old fields: each one listed is required (3.1).
+      const auto old_field = [&](std::string_view name, const std::optional<std::string>& listed)
+          -> std::optional<std::string> {
+        if (!listed)
+          return std::string();
+        return given(name).transform(
+            [&](const std::string& value) { return "<" + std::string(name) + ">" + escaped(value) + "</" + std::string(name) + ">"; });
+      };
+      const std::array fields{old_field("username", asked->username), old_field("password", asked->password),
+                              old_field("email", asked->email)};
+      if (std::ranges::any_of(fields, [](const auto& one) { return !one.has_value(); }))
+        return asks_more();
+      request = fields | std::views::transform([](const auto& one) -> const std::string& { return *one; }) |
+                std::views::join | std::ranges::to<std::string>();
+    } else {
+      // Nothing to fill: a page to make the account on, or nothing at all.
+      return asks_more();
+    }
+    write("<iq type='set' id='register_2'><query xmlns='" + std::string(registration::register_namespace) + "'>" +
+          request + "</query></iq>");
+    auto made = chevron::read_one_of<basic::iq_result<chevron::tagged<chevron::any>>,
+                                     basic::iq_error<chevron::tagged<chevron::any>, stanza_error>>(s_.source());
+    if (!made)
+      return fail(connect_code::xml, "register: " + made.error().where);
+    if (const auto* refused = splice::get_if<1>(&*made))
+      return refusal(refused->reason);
+    return {};
+  }
+
+  constexpr std::unexpected<connect_error> refusal(const stanza_error& reason) const {
+    return std::unexpected(connect_error{connect_code::registration_refused, std::string(reason.condition()),
+                                         std::nullopt, std::nullopt, reason});
+  }
+
   Session& s_;
   const options& o_;
   const sm_state* resume_;
   bool authenticated_ = false;
+  bool registered_ = false;
 };
 
 template <class Session>

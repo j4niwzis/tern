@@ -289,3 +289,74 @@ TEST(Stream, NoTlsNoLogin) {
   EXPECT_EQ(session.error().code, tern::connect_code::tls_required);
   EXPECT_EQ(script.written.find("<auth"), std::string::npos) << script.written;
 }
+
+// XEP-0077 with a captcha (XEP-0158): the form read whole, and handed back
+// where it asks more than was answered; answered, sent back and signed in.
+namespace {
+const std::string registration_form =
+    "<iq type='result' id='register_1'><query xmlns='jabber:iq:register'><instructions>Fill in the form</instructions>"
+    "<x xmlns='jabber:x:data' type='form'><title>Sign up</title><instructions>Type the letters you see</instructions>"
+    "<field var='FORM_TYPE' type='hidden'><value>jabber:iq:register</value></field>"
+    "<field var='username' type='text-single' label='User'><required/></field>"
+    "<field var='password' type='text-private' label='Password'><required/></field>"
+    "<field var='challenge' type='hidden'><value>c1</value></field>"
+    "<field var='ocr' label='Enter the text you see'><required/>"
+    "<media xmlns='urn:xmpp:media-element' height='80' width='290'>"
+    "<uri type='image/png'>cid:sha1+abc@bob.xmpp.org</uri></media></field></x>"
+    "<data xmlns='urn:xmpp:bob' cid='sha1+abc@bob.xmpp.org' type='image/png' max-age='0'>aGVsbG8=</data>"
+    "</query></iq>";
+std::string registering_server(std::string_view after) {
+  return server_header("s1") +
+         "<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls></stream:features>"
+         "<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>" +
+         server_header("s2") +
+         "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism>"
+         "</mechanisms><register xmlns='http://jabber.org/features/iq-register'/></stream:features>" +
+         registration_form + std::string(after);
+}
+}  // namespace
+
+TEST(Stream, RegistrationAsksMore) {
+  const std::string server = registering_server("");
+  scripted script{.data = server};
+  tern::options how = rfc7677();
+  how.create = std::vector<tern::registration::answer>{};
+  const auto session = tern::try_connect(script, how);
+  ASSERT_FALSE(session.has_value());
+  EXPECT_EQ(session.error().code, tern::connect_code::registration_asks);
+  ASSERT_TRUE(session.error().registration.has_value());
+  const tern::registration::asked& asked = *session.error().registration;
+  EXPECT_EQ(asked.instructions, std::optional<std::string>("Fill in the form"));
+  ASSERT_TRUE(asked.form.has_value());
+  EXPECT_EQ(asked.form->title, std::optional<std::string>("Sign up"));
+  ASSERT_EQ(asked.form->fields.size(), 5u);
+  const tern::data_form::field& ocr = asked.form->fields[4];
+  EXPECT_EQ(ocr.label, std::optional<std::string>("Enter the text you see"));
+  EXPECT_TRUE(ocr.required.has_value());
+  ASSERT_TRUE(ocr.media.has_value());
+  ASSERT_EQ(ocr.media->uri.size(), 1u);
+  EXPECT_EQ(ocr.media->uri[0].type, "image/png");
+  EXPECT_EQ(ocr.media->uri[0].location, "cid:sha1+abc@bob.xmpp.org");
+  ASSERT_EQ(asked.data.size(), 1u);
+  EXPECT_EQ(asked.data[0].cid, "sha1+abc@bob.xmpp.org");
+  EXPECT_EQ(asked.data[0].base64, "aGVsbG8=");
+}
+
+TEST(Stream, RegistrationAnswered) {
+  const std::string server =
+      registering_server("<iq type='result' id='register_2'/><success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>") +
+      server_header("s3") + bind_features + bind_result;
+  scripted script{.data = server};
+  tern::options how = rfc7677();
+  how.create = std::vector<tern::registration::answer>{{.var = "ocr", .value = "xyz"}};
+  const auto session = tern::try_connect(script, how);
+  ASSERT_TRUE(session.has_value()) << (session ? "" : session.error().detail);
+  EXPECT_NE(script.written.find(
+                "<iq type='set' id='register_2'><query xmlns='jabber:iq:register'><x xmlns='jabber:x:data' type='submit'>"
+                "<field var='FORM_TYPE'><value>jabber:iq:register</value></field>"
+                "<field var='username'><value>user</value></field><field var='password'><value>pencil</value></field>"
+                "<field var='challenge'><value>c1</value></field><field var='ocr'><value>xyz</value></field>"
+                "</x></query></iq><auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>"),
+            std::string::npos)
+      << script.written;
+}
