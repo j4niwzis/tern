@@ -92,7 +92,7 @@ TEST(Stream, MalformedStanzas) {
       seen.push_back("malformed " + one.error().malformed->element);
       continue;
     }
-    seen.push_back(splice::get<tern::message::chat>(splice::get<tern::message_t>(*one)).body.value_or(""));
+    seen.push_back(spl::get<tern::message::chat>(spl::get<tern::message_t>(*one)).body.value_or(""));
   }
   EXPECT_EQ(seen, (std::vector<std::string>{"malformed iq", "malformed presence", "still here"}));
   EXPECT_NE(written.find("id=\"s1\" type=\"error\"><error type=\"modify\"><bad-request"), std::string::npos)

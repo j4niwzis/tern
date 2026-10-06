@@ -61,10 +61,10 @@ tern::options plain() {
 std::string body_of(const std::optional<tern::stanza_t>& one) {
   if (!one)
     return "(the end)";
-  const auto* message = splice::get_if<tern::message_t>(&*one);
-  if (!message || !splice::holds_alternative<tern::message::chat>(*message))
+  const auto* message = spl::get_if<tern::message_t>(&*one);
+  if (!message || !spl::holds_alternative<tern::message::chat>(*message))
     return "(not a chat message)";
-  return splice::get<tern::message::chat>(*message).body.value_or("");
+  return spl::get<tern::message::chat>(*message).body.value_or("");
 }
 
 // A coroutine started, run until it parks, the reader -- this thread --

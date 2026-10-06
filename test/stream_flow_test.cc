@@ -26,7 +26,7 @@ tern::options plain(bool managed = false) {
   return how;
 }
 std::string body_of(const tern::stanza_t& stanza) {
-  return splice::get<tern::message::chat>(splice::get<tern::message_t>(stanza)).body.value_or("");
+  return spl::get<tern::message::chat>(spl::get<tern::message_t>(stanza)).body.value_or("");
 }
 const std::string first = "<message type='chat' from='romeo@example.net'><body>one</body></message>";
 const std::string second = "<message type='chat' from='romeo@example.net'><body>two</body></message>";
@@ -198,7 +198,7 @@ TEST(Flow, CancellationHistoryIsBoundedAndIdsAreNotReusedWithinIt) {
   current = 0;
   auto expired = session.receive();
   ASSERT_TRUE(expired);
-  EXPECT_EQ(splice::get<tern::iq::result>(splice::get<tern::iq_t>(*expired)).id, "tern-1");
+  EXPECT_EQ(spl::get<tern::iq::result>(spl::get<tern::iq_t>(*expired)).id, "tern-1");
   EXPECT_EQ(body_of(*session.receive()), "one");  // the recent cancellation is still discarded
 }
 

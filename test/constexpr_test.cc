@@ -71,10 +71,10 @@ CONSTEXPR_TEST(Constexpr, Session) {
   const auto one = session->try_receive();
   CONSTEXPR_EXPECT_TRUE(one.has_value() && one->has_value());
   if (one && *one) {
-    const auto* message = splice::get_if<tern::message_t>(&**one);
+    const auto* message = spl::get_if<tern::message_t>(&**one);
     CONSTEXPR_EXPECT_TRUE(message != nullptr);
     if (message)
-      CONSTEXPR_EXPECT_EQ(splice::get<tern::message::chat>(*message).body.value_or(""), "hi");
+      CONSTEXPR_EXPECT_EQ(spl::get<tern::message::chat>(*message).body.value_or(""), "hi");
   }
   const auto end = session->try_receive();
   CONSTEXPR_EXPECT_TRUE(end.has_value() && !end->has_value());
@@ -114,10 +114,10 @@ CONSTEXPR_TEST(Constexpr, Inboxes) {
       return "(error)";
     if (!*got)
       return "(the end)";
-    const auto* message = splice::get_if<tern::message_t>(*got);
+    const auto* message = spl::get_if<tern::message_t>(*got);
     if (!message)
       return "(not a message)";
-    return splice::get<tern::message::chat>(*message).body.value_or("");
+    return spl::get<tern::message::chat>(*message).body.value_or("");
   };
   auto everyone = session->open_inbox();
   auto romeo = session->open_inbox("romeo@example.net");
@@ -131,8 +131,8 @@ CONSTEXPR_TEST(Constexpr, Inboxes) {
     auto nurse = session->open_inbox();
     // A filter of one's own: what is not taken is passed over, for it alone.
     const auto from_the_nurse = [](const tern::stanza_t& one) {
-      const auto* message = splice::get_if<tern::message_t>(&one);
-      return message && splice::get<tern::message::chat>(*message).from.value_or("").starts_with("nurse@");
+      const auto* message = spl::get_if<tern::message_t>(&one);
+      return message && spl::get<tern::message::chat>(*message).from.value_or("").starts_with("nurse@");
     };
     CONSTEXPR_EXPECT_EQ(body(nurse.try_next(from_the_nurse)), "n1");
     CONSTEXPR_EXPECT_EQ(body(nurse.try_next()), "(the end)");

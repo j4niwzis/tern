@@ -79,7 +79,7 @@ TEST(Xep, Carbons) {
   EXPECT_NE(written.find("<enable xmlns=\"urn:xmpp:carbons:2\"/>"), std::string::npos) << written;
   const auto one = session.receive();
   ASSERT_TRUE(one.has_value());
-  const auto& copy = splice::get<tern::message::normal>(splice::get<tern::message_t>(*one));
+  const auto& copy = spl::get<tern::message::normal>(spl::get<tern::message_t>(*one));
   ASSERT_EQ(copy.payload.size(), 1u);
   const auto& received = copy.payload[0].as<tern::carbons::received>();
   ASSERT_TRUE(received.forwarded.message.has_value());
@@ -134,7 +134,7 @@ TEST(Xep, Archive) {
   EXPECT_EQ(page.fin.page->last, "09af3-cc343-b409f");
   const auto live = session.receive();  // what was not the archive's, still to be had
   ASSERT_TRUE(live.has_value());
-  EXPECT_EQ(splice::get<tern::message::chat>(splice::get<tern::message_t>(*live)).body, "live");
+  EXPECT_EQ(spl::get<tern::message::chat>(spl::get<tern::message_t>(*live)).body, "live");
 }
 
 // XEP-0198: enabled after binding; <r/> answered with the stanzas handled;

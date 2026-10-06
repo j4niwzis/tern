@@ -90,7 +90,7 @@ TEST(Stream, ParallelThreads) {
   one.join();
   two.join();
   ASSERT_TRUE(message.has_value());
-  EXPECT_EQ(splice::get<tern::message::chat>(splice::get<tern::message_t>(*message)).body, "after");
+  EXPECT_EQ(spl::get<tern::message::chat>(spl::get<tern::message_t>(*message)).body, "after");
   ASSERT_TRUE(first && first->has_value());
   ASSERT_TRUE(second && second->has_value());
   std::set<std::string> ids{(*first)->id, (*second)->id};

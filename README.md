@@ -17,7 +17,7 @@ for (auto&& stanza : session.stanzas()) {     // ends where the server ends the 
     report(stanza.error());
     break;
   }
-  splice::visit(handle, *stanza);               // message, presence or iq
+  spl::visit(handle, *stanza);               // message, presence or iq
 }
 session.send(tern::message::chat{.to = "romeo@example.net", .body = "hi"});
 ```
@@ -77,7 +77,7 @@ Each kind of stanza is a type of its own, with what that kind can carry:
 `tern::message::chat`, `tern::message::groupchat`, … `tern::presence::subscribe`,
 … `tern::iq::get`, `tern::iq::set`, `tern::iq::result`, `tern::iq::error`.
 `tern::message_t`, `tern::presence_t` and `tern::iq_t` are the variants of
-each, `tern::stanza_t` the variant of those, and `splice::visit` tells them
+each, `tern::stanza_t` the variant of those, and `spl::visit` tells them
 apart. The error kinds carry their `<error/>` parsed, as `reason`: its type
 (cancel, continue, modify, auth, wait), its condition as a type of its own
 (`what`, a `chevron::tagged` of `tern::conditions::service_unavailable` and the

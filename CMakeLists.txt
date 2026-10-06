@@ -23,7 +23,7 @@ set(SPLICE_CONSTEXPR_STEPS 100000000 CACHE STRING
   "clang's -fconstexpr-steps for splice, as tern and its family set it")
 cme_declare_port(NAME splice PROVIDES splice
   GITHUB_REPOSITORY j4niwzis/splice
-  GIT_TAG f2c25443061ba5353720eccd0a9438793c2ea053
+  GIT_TAG eb07788f6751dad1636aec9fd6bb134fe03a953f
   LICENSE GPL-3.0-only
   TARGETS splice)
 cme_options(splice "SPLICE_TESTS OFF")
@@ -36,7 +36,7 @@ cme_find_package(splice REQUIRED)
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG bbc3e0d2a2b67f1cd039c582ef131bafa2d81348
+  GIT_TAG 65f2673f640bbf963445f04fa1da36b6081e901c
   LICENSE AGPL-3.0-only
   TARGETS chevron)
 cme_options(chevron "CHEVRON_TESTS OFF")
@@ -44,7 +44,7 @@ cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 6dc139f9590dc0d3ac1cc0e9748e67d7a1485480
+  GIT_TAG f4fa9db34576f78cfe5b919e30c065de1801f4e9
   LICENSE AGPL-3.0-only
   TARGETS alef)
 cme_options(alef "ALEF_TESTS OFF")
