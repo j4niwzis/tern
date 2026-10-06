@@ -3520,13 +3520,13 @@ class negotiation {
         return asks_more();
       const auto field_sent = [&](const data_form::field& one) {
         return "<field var='" + escaped(*one.var) + "'>" +
-               (filled(one) |
+               (std::ranges::to<std::string>(filled(one) |
                 std::views::transform([](const std::string& value) { return "<value>" + escaped(value) + "</value>"; }) |
-                std::views::join | std::ranges::to<std::string>()) +
+                std::views::join)) +
                "</field>";
       };
       request = "<x xmlns='" + std::string(data_form::form_namespace) + "' type='submit'>" +
-                (sent | std::views::transform(field_sent) | std::views::join | std::ranges::to<std::string>()) + "</x>";
+                (std::ranges::to<std::string>(sent | std::views::transform(field_sent) | std::views::join)) + "</x>";
     } else if (asked->username || asked->password) {
       // The old fields: each one listed is required (3.1).
       const auto old_field = [&](std::string_view name, const std::optional<std::string>& listed)
@@ -3540,8 +3540,8 @@ class negotiation {
                               old_field("email", asked->email)};
       if (std::ranges::any_of(fields, [](const auto& one) { return !one.has_value(); }))
         return asks_more();
-      request = fields | std::views::transform([](const auto& one) -> const std::string& { return *one; }) |
-                std::views::join | std::ranges::to<std::string>();
+      request = std::ranges::to<std::string>(fields | std::views::transform([](const auto& one) -> const std::string& { return *one; }) |
+                std::views::join);
     } else {
       // Nothing to fill: a page to make the account on, or nothing at all.
       return asks_more();

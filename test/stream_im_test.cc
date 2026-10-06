@@ -208,7 +208,7 @@ TEST(Stream, SubjectAndThread) {
   EXPECT_EQ(read->thread->id, "e0ffe42b28561960c6b12b944a092794b9683a38");
   EXPECT_EQ(read->thread->parent, "7edac73ab41e45c4aafa7b2d7b749080");
   EXPECT_TRUE(read->payload.empty());
-  const std::string written = chevron::to_xml(*read) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(*read));
   const auto again = chevron::read<tern::message::chat>(std::string_view(written) | chevron::events);
   ASSERT_TRUE(again.has_value()) << written;
   EXPECT_EQ(again->thread->id, read->thread->id);
@@ -292,7 +292,7 @@ TEST(Stream, RoomPresence) {
 
   tern::client::presence::available joining{.to = "coven@chat.shakespeare.lit/thirdwitch"};
   joining.payload.emplace_back(tern::muc::join{.history = tern::muc::history{.maxstanzas = "20"}});
-  const std::string written = chevron::to_xml(joining) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(joining));
   EXPECT_NE(written.find("http://jabber.org/protocol/muc"), std::string::npos) << written;
   EXPECT_NE(written.find("maxstanzas=\"20\""), std::string::npos) << written;
 }
@@ -320,7 +320,7 @@ TEST(Stream, Bookmarks) {
 TEST(Stream, DisplayedMarker) {
   tern::client::message::chat marker{.to = "romeo@montague.lit"};
   marker.payload.emplace_back(tern::markers::displayed{.id = "message-1"});
-  const std::string written = chevron::to_xml(marker) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(marker));
   EXPECT_NE(written.find("urn:xmpp:chat-markers:0"), std::string::npos) << written;
   EXPECT_NE(written.find("id=\"message-1\""), std::string::npos) << written;
 }
@@ -348,6 +348,6 @@ TEST(Stream, CorrectionsRetractionsReplies) {
   EXPECT_TRUE(replied);
   tern::client::message::chat retraction{.to = "juliet@capulet.lit"};
   retraction.payload.emplace_back(tern::retractions::retract{.id = "m2"});
-  const std::string written = chevron::to_xml(retraction) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(retraction));
   EXPECT_NE(written.find("urn:xmpp:message-retract:1"), std::string::npos) << written;
 }

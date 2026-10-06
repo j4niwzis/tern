@@ -149,7 +149,7 @@ TEST(Flow, UnacknowledgedCapacityCanBeRetriedAfterAnAck) {
 
 TEST(Flow, UnacknowledgedByteLimitIsExactAndRefusesBeforeWriting) {
   const tern::message::chat message{.body = "outgoing & escaped"};
-  const auto encoded = chevron::to_xml(message) | std::ranges::to<std::string>();
+  const auto encoded = std::ranges::to<std::string>(chevron::to_xml(message));
   for (const auto bytes : {encoded.size() - 1, encoded.size()}) {
     const std::string server = connected("", true);
     std::string_view input = server;
@@ -240,7 +240,7 @@ TEST(Flow, UnmanagedWritesBorrowLargeRunsAndCoalesceSmallFragments) {
   EXPECT_TRUE(wire.borrowed);
   EXPECT_EQ(wire.flushes, 1u);
   EXPECT_LE(wire.writes, 5u);
-  EXPECT_EQ(wire.output, chevron::to_xml(message) | std::ranges::to<std::string>());
+  EXPECT_EQ(wire.output, std::ranges::to<std::string>(chevron::to_xml(message)));
   wire.writes = 0;
   session.send(tern::message::chat{.body = "small & text"});
   EXPECT_EQ(wire.writes, 1u);
