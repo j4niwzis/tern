@@ -3,7 +3,7 @@
   "lock": 1,
   "ports": {
     "alef": {
-      "commit": "6dc139f9590dc0d3ac1cc0e9748e67d7a1485480",
+      "commit": "ca0dacaab3c6dd5a9dfb3fc4c2322b756f36f744",
       "url": "https://github.com/j4niwzis/alef.git"
     },
     "boost": {
@@ -21,7 +21,7 @@
       "version": "1.92.0"
     },
     "chevron": {
-      "commit": "bbc3e0d2a2b67f1cd039c582ef131bafa2d81348",
+      "commit": "8f40c545f0120747b3bf2ad6a61b420505e1249b",
       "url": "https://github.com/j4niwzis/chevron.git"
     },
     "cmake-everywhere": {
