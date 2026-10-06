@@ -36,7 +36,7 @@ cme_find_package(splice REQUIRED)
 # -DCPM_chevron_SOURCE=<path> and -DCPM_alef_SOURCE=<path>.
 cme_declare_port(NAME chevron PROVIDES chevron
   GITHUB_REPOSITORY j4niwzis/chevron
-  GIT_TAG fb62ad5f427c8c6e4b7f4609e628f0af48f713de
+  GIT_TAG e9f31b8a57a6ef9fc0bd6883f6ff01022c07b1f1
   LICENSE AGPL-3.0-only
   TARGETS chevron)
 cme_options(chevron "CHEVRON_TESTS OFF")
@@ -44,7 +44,7 @@ cme_find_package(chevron REQUIRED)
 
 cme_declare_port(NAME alef PROVIDES alef
   GITHUB_REPOSITORY j4niwzis/alef
-  GIT_TAG 02084be31e8c0474c10cd606cffdbe238d8019f0
+  GIT_TAG 582cbdaed7ea7703a1df7cfbce8df2df19ecd4d9
   LICENSE AGPL-3.0-only
   TARGETS alef)
 cme_options(alef "ALEF_TESTS OFF")
