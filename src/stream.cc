@@ -692,23 +692,117 @@ constexpr auto xml_schema(chevron::type<user>) {
 }
 }  // namespace muc
 
+// XEP-0492: per-chat notification modes. Advanced settings of other
+// clients remain opaque and survive a mode change.
+namespace notifications {
+inline constexpr std::string_view namespace_uri = "urn:xmpp:notification-settings:1";
+struct advanced { std::vector<chevron::any> children; };
+constexpr auto xml_schema(chevron::type<advanced>) {
+  return chevron::schema<advanced>().name(namespace_uri, "advanced").members(chevron::members::unknown_children());
+}
+namespace mode {
+struct always { static constexpr std::string_view name = "always"; };
+struct mentions { static constexpr std::string_view name = "on-mention"; };
+struct never { static constexpr std::string_view name = "never"; };
+}
+template <class Mode> struct setting {
+  std::optional<std::string> category;
+  std::optional<std::string> type;
+  std::optional<notifications::advanced> advanced;
+};
+template <class Mode> constexpr auto xml_schema(chevron::type<setting<Mode>>) {
+  using namespace chevron::members;
+  return chevron::schema<setting<Mode>>().name(namespace_uri, Mode::name)
+      .members(attribute("identity-category"), attribute("identity-type"), child("advanced"));
+}
+using choice = chevron::tagged<setting<mode::always>, setting<mode::mentions>, setting<mode::never>>;
+struct notify { std::vector<choice> settings; };
+constexpr auto xml_schema(chevron::type<notify>) {
+  return chevron::schema<notify>().name(namespace_uri, "notify").members(chevron::members::_);
+}
+struct decision { bool on = true; bool mentions = false; };
+constexpr decision decision_of(const setting<mode::always>&) { return {true, false}; }
+constexpr decision decision_of(const setting<mode::mentions>&) { return {true, true}; }
+constexpr decision decision_of(const setting<mode::never>&) { return {false, false}; }
+inline int specificity(const auto& setting) {
+  if (setting.type && !setting.category) return -1;
+  if (!setting.category) return 0;
+  if (*setting.category != "client") return -1;
+  if (!setting.type) return 1;
+  return *setting.type == "pc" ? 2 : -1;
+}
+inline std::optional<decision> selected(const notify& settings) {
+  int best = -1;
+  std::optional<decision> out;
+  for (const auto& choice : settings.settings)
+    spl::visit([&](const auto& setting) {
+      if (const int rank = specificity(setting); rank > best) {
+        best = rank;
+        out = decision_of(setting);
+      }
+    }, choice.data());
+  return out;
+}
+inline void choose(notify& settings, decision desired) {
+  int best = -1;
+  for (const auto& choice : settings.settings)
+    spl::visit([&](const auto& setting) { best = std::max(best, specificity(setting)); }, choice.data());
+  setting<mode::always> kept;
+  std::erase_if(settings.settings, [&](const choice& choice) {
+    return spl::visit([&](const auto& setting) {
+      if (specificity(setting) != best || best < 0) return false;
+      kept.category = setting.category; kept.type = setting.type;
+      if (setting.advanced) {
+        if (!kept.advanced) kept.advanced.emplace();
+        kept.advanced->children.insert(kept.advanced->children.end(),
+            setting.advanced->children.begin(), setting.advanced->children.end());
+      }
+      return true;
+    }, choice.data());
+  });
+  const auto add = [&](auto identity) {
+    using mode = decltype(identity);
+    settings.settings.emplace_back(setting<mode>{kept.category, kept.type, kept.advanced});
+  };
+  if (!desired.on) add(mode::never{});
+  else if (desired.mentions) add(mode::mentions{});
+  else add(mode::always{});
+  const bool fallback = std::ranges::any_of(settings.settings, [](const choice& choice) {
+    return spl::visit([](const auto& setting) { return specificity(setting) == 0; }, choice.data());
+  });
+  if (!fallback) {
+    kept = {};
+    if (!desired.on) add(mode::never{});
+    else if (desired.mentions) add(mode::mentions{});
+    else add(mode::always{});
+  }
+}
+}  // namespace notifications
+
 // XEP-0402: the rooms one keeps, as PEP items of urn:xmpp:bookmarks:1, each
 // item's id the room's JID.
 namespace bookmarks {
 inline constexpr std::string_view bookmarks_namespace = "urn:xmpp:bookmarks:1";
 inline constexpr std::string_view pubsub_namespace = "http://jabber.org/protocol/pubsub";
 
+struct extensions {
+  std::vector<chevron::tagged<notifications::notify, chevron::any>> children;
+};
+constexpr auto xml_schema(chevron::type<extensions>) {
+  return chevron::schema<extensions>().name(bookmarks_namespace, "extensions").members(chevron::members::_);
+}
 struct conference {
   std::optional<std::string> name;
   std::optional<std::string> autojoin;  // "true" or "1" to join on connecting
   std::optional<std::string> nick;
   std::optional<std::string> password;
+  std::optional<bookmarks::extensions> extensions;
 };
 constexpr auto xml_schema(chevron::type<conference>) {
   using namespace chevron::members;
   return chevron::schema<conference>()
       .name(bookmarks_namespace, "conference")
-      .members(attribute(), attribute(), child_text(), child_text());
+      .members(attribute(), attribute(), child_text(), child_text(), child("extensions"));
 }
 
 struct item {
@@ -736,6 +830,31 @@ struct pubsub {
 constexpr auto xml_schema(chevron::type<pubsub>) {
   using namespace chevron::members;
   return chevron::schema<pubsub>().name(pubsub_namespace, "pubsub").members(child("items"));
+}
+
+inline constexpr std::string_view event_namespace = "http://jabber.org/protocol/pubsub#event";
+struct published {
+  std::string id;
+  std::optional<bookmarks::conference> conference;
+};
+constexpr auto xml_schema(chevron::type<published>) {
+  using namespace chevron::members;
+  return chevron::schema<published>().name(event_namespace, "item").members(attribute(), child("conference", bookmarks_namespace));
+}
+struct retracted { std::string id; };
+constexpr auto xml_schema(chevron::type<retracted>) {
+  return chevron::schema<retracted>().name(event_namespace, "retract").members(chevron::members::attribute());
+}
+struct published_items {
+  std::string node;
+  std::vector<chevron::tagged<published, retracted>> items;
+};
+constexpr auto xml_schema(chevron::type<published_items>) {
+  return chevron::schema<published_items>().name(event_namespace, "items").members(chevron::members::attribute(), chevron::members::_);
+}
+struct event { std::optional<published_items> items; };
+constexpr auto xml_schema(chevron::type<event>) {
+  return chevron::schema<event>().name(event_namespace, "event").members(chevron::members::child("items"));
 }
 
 // Whether a bookmark says to join its room on connecting.
@@ -1443,7 +1562,7 @@ using client = protocol<queries<roster, query::version, query::ping, query::disc
                         answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration, muc::affiliations>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
                                    muc::user, markers::markable, markers::displayed, corrections::replace,
-                                   retractions::retract, replies::reply>>;
+                                   retractions::retract, replies::reply, bookmarks::event>>;
 
 // The standard protocol's stanzas, by their plain names.
 namespace message {
@@ -2602,6 +2721,10 @@ class session {
     for (std::string_view var : {disco::info_namespace, caps::caps_namespace, std::string_view("urn:xmpp:ping")})
       if (std::ranges::find(self_.features, var, &disco::feature::var) == self_.features.end())
         self_.features.push_back({std::string(var)});
+    if constexpr (P::extension::template can_hold<bookmarks::event>)
+      for (std::string_view var : {notifications::namespace_uri, std::string_view("urn:xmpp:bookmarks:1+notify")})
+        if (std::ranges::find(self_.features, var, &disco::feature::var) == self_.features.end())
+          self_.features.push_back({std::string(var)});
     caps_node_ = how.caps_node;
   }
   constexpr void stream_managed(const sm::enabled& enabled) {

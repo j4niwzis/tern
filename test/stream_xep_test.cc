@@ -306,3 +306,42 @@ TEST(Xep, RoomMembershipQueriesPreserveExistingAffiliations) {
   EXPECT_NE(written.find("muc#admin"), std::string::npos);
   EXPECT_NE(written.find("jid=\"new@example.com\" affiliation=\"member\""), std::string::npos);
 }
+
+TEST(Xep, NotificationIdentityAndAdvancedSettingsSurviveModeChanges) {
+  const std::string xml = R"(<notify xmlns='urn:xmpp:notification-settings:1'>
+    <always/><never identity-category='client' identity-type='phone'/>
+    <on-mention identity-category='client' identity-type='pc'><advanced>
+      <extra xmlns='example:other-client'><keep>untouched</keep></extra>
+    </advanced></on-mention></notify>)";
+  auto settings = chevron::read<tern::notifications::notify>(std::string_view(xml) | chevron::events);
+  ASSERT_TRUE(settings);
+  ASSERT_TRUE(tern::notifications::selected(*settings));
+  EXPECT_TRUE(tern::notifications::selected(*settings)->mentions);
+  tern::notifications::choose(*settings, {false, false});
+  EXPECT_FALSE(tern::notifications::selected(*settings)->on);
+  const auto written = std::ranges::to<std::string>(chevron::to_xml(*settings));
+  EXPECT_NE(written.find("untouched"), std::string::npos);
+  EXPECT_NE(written.find("phone"), std::string::npos);
+  auto again = chevron::read<tern::notifications::notify>(std::string_view(written) | chevron::events);
+  ASSERT_TRUE(again);
+  EXPECT_FALSE(tern::notifications::selected(*again)->on);
+  EXPECT_EQ(again->settings.size(), 3u);
+}
+TEST(Xep, BookmarkExtensionsAndLiveNotificationsAreTyped) {
+  const std::string xml = R"(<event xmlns='http://jabber.org/protocol/pubsub#event'>
+    <items node='urn:xmpp:bookmarks:1'><item id='room@conference.example'>
+      <conference xmlns='urn:xmpp:bookmarks:1' name='Room'><extensions>
+        <notify xmlns='urn:xmpp:notification-settings:1'><never/></notify>
+        <extra xmlns='example:other-client'/>
+      </extensions></conference></item></items></event>)";
+  auto event = chevron::read<tern::bookmarks::event>(std::string_view(xml) | chevron::events);
+  ASSERT_TRUE(event);
+  ASSERT_TRUE(event->items);
+  ASSERT_EQ(event->items->items.size(), 1u);
+  const auto& item = event->items->items.front().as<tern::bookmarks::published>();
+  ASSERT_TRUE(item.conference);
+  ASSERT_TRUE(item.conference->extensions);
+  EXPECT_EQ(item.conference->extensions->children.size(), 2u);
+  const auto& notify = item.conference->extensions->children.front().as<tern::notifications::notify>();
+  EXPECT_FALSE(tern::notifications::selected(notify)->on);
+}
