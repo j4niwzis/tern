@@ -661,14 +661,34 @@ constexpr auto xml_schema(chevron::type<status>) {
   return chevron::schema<status>().name(user_namespace, "status").members(attribute());
 }
 
-// What a room's presences carry about the occupant.
+// XEP-0045 invitations are mediated by the room. The same extension is
+// carried by normal messages and presence; the recipient is `to` when
+// sending and the inviter is `from` when receiving.
+struct invitation {
+  std::optional<std::string> to, from, reason;
+};
+constexpr auto xml_schema(chevron::type<invitation>) {
+  using namespace chevron::members;
+  return chevron::schema<invitation>().name(user_namespace, "invite").members(attribute(), attribute(), child_text());
+}
+struct decline {
+  std::optional<std::string> to, from, reason;
+};
+constexpr auto xml_schema(chevron::type<decline>) {
+  using namespace chevron::members;
+  return chevron::schema<decline>().name(user_namespace, "decline").members(attribute(), attribute(), child_text());
+}
+// What a room's presences and mediated invitation messages carry.
 struct user {
   std::vector<muc::item> items;
   std::vector<muc::status> statuses;
+  std::vector<muc::invitation> invitations;
+  std::optional<muc::decline> declined;
+  std::optional<std::string> password;
 };
 constexpr auto xml_schema(chevron::type<user>) {
   using namespace chevron::members;
-  return chevron::schema<user>().name(user_namespace, "x").members(child("item"), child("status"));
+  return chevron::schema<user>().name(user_namespace, "x").members(child("item"), child("status"), child("invite"), child("decline"), child_text());
 }
 }  // namespace muc
 
@@ -1091,6 +1111,27 @@ struct sm_state {
 // service offers no configuration options; it is distinct from an empty form.
 namespace muc {
 inline constexpr std::string_view owner_namespace = "http://jabber.org/protocol/muc#owner";
+inline constexpr std::string_view admin_namespace = "http://jabber.org/protocol/muc#admin";
+struct affiliation_item {
+  std::optional<std::string> jid, affiliation;
+};
+constexpr auto xml_schema(chevron::type<affiliation_item>) {
+  using namespace chevron::members;
+  return chevron::schema<affiliation_item>().name(admin_namespace, "item").members(attribute(), attribute());
+}
+struct affiliations { std::vector<affiliation_item> items; };
+constexpr auto xml_schema(chevron::type<affiliations>) {
+  using namespace chevron::members;
+  return chevron::schema<affiliations>().name(admin_namespace, "query").members(child("item"));
+}
+inline constexpr std::array<std::string_view, 4> affiliation_lists{"owner", "admin", "member", "outcast"};
+struct admission { bool allowed = false, banned = false; };
+inline admission admission_of(const affiliation_item& item) {
+  static const std::unordered_map<std::string_view, admission> known{
+      {"owner", {.allowed = true}}, {"admin", {.allowed = true}}, {"member", {.allowed = true}}, {"outcast", {.banned = true}}};
+  const auto found = item.affiliation ? known.find(*item.affiliation) : known.end();
+  return found == known.end() ? admission{} : found->second;
+}
 struct configuration { std::optional<data_form::form> form; };
 constexpr auto xml_schema(chevron::type<configuration>) {
   using namespace chevron::members;
@@ -1152,6 +1193,24 @@ struct muc_configuration {
   using kind = tern::get;
   using answer = tern::muc::configuration;
 };
+struct muc_affiliations {
+  using kind = tern::get;
+  using answer = tern::muc::affiliations;
+  tern::muc::affiliation_item item;
+};
+constexpr auto xml_schema(chevron::type<muc_affiliations>) {
+  using namespace chevron::members;
+  return chevron::schema<muc_affiliations>().name(muc::admin_namespace, "query").members(child("item"));
+}
+struct muc_affiliate {
+  using kind = tern::set;
+  using answer = void;
+  tern::muc::affiliation_item item;
+};
+constexpr auto xml_schema(chevron::type<muc_affiliate>) {
+  using namespace chevron::members;
+  return chevron::schema<muc_affiliate>().name(muc::admin_namespace, "query").members(child("item"));
+}
 constexpr auto xml_schema(chevron::type<muc_configuration>) {
   return chevron::schema<muc_configuration>().name(muc::owner_namespace, "query");
 }
@@ -1381,7 +1440,7 @@ using standard = protocol<queries<roster, query::version, query::ping, query::di
 // chat markers (XEP-0333), corrections (XEP-0308), retractions (XEP-0424)
 // and replies (XEP-0461), on top of the standard protocol.
 using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
-                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration>,
+                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration, muc::affiliations>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
                                    muc::user, markers::markable, markers::displayed, corrections::replace,
                                    retractions::retract, replies::reply>>;

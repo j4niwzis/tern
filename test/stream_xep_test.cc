@@ -248,3 +248,61 @@ TEST(Xep, BookmarkPublicationRequiresPrivatePersistentStorage) {
   EXPECT_NE(written.find("<retract"), std::string::npos);
   EXPECT_NE(written.find("notify=\"true\""), std::string::npos);
 }
+
+TEST(Xep, MediatedRoomInvitationsAndDeclines) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<message from='lounge@rooms.example.com'><x xmlns='http://jabber.org/protocol/muc#user'>"
+      "<invite from='alice@example.com/desktop'><reason>Join us</reason></invite><password>secret</password></x></message>"
+      "<message from='lounge@rooms.example.com'><x xmlns='http://jabber.org/protocol/muc#user'>"
+      "<decline from='bob@example.com'><reason>No thanks</reason></decline></x></message>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  written.clear();
+  tern::client::message::normal invite{.to = "lounge@rooms.example.com"};
+  invite.payload.emplace_back(tern::muc::user{.invitations = {{.to = "bob@example.com", .reason = "Join us"}}});
+  session.send(invite);
+  EXPECT_NE(written.find("<invite to=\"bob@example.com\""), std::string::npos);
+  EXPECT_NE(written.find("<reason>Join us</reason>"), std::string::npos);
+  auto received = session.receive();
+  ASSERT_TRUE(received.has_value());
+  const auto& message = spl::get<tern::client::message::normal>(spl::get<tern::client::message_t>(*received));
+  const auto* invitation = message.payload.front().get_if<tern::muc::user>();
+  ASSERT_NE(invitation, nullptr);
+  ASSERT_EQ(invitation->invitations.size(), 1u);
+  EXPECT_EQ(invitation->invitations.front().from, "alice@example.com/desktop");
+  EXPECT_EQ(invitation->invitations.front().reason, "Join us");
+  EXPECT_EQ(invitation->password, "secret");
+  received = session.receive();
+  ASSERT_TRUE(received.has_value());
+  const auto& reply = spl::get<tern::client::message::normal>(spl::get<tern::client::message_t>(*received));
+  const auto* declined = reply.payload.front().get_if<tern::muc::user>();
+  ASSERT_NE(declined, nullptr);
+  ASSERT_TRUE(declined->declined.has_value());
+  EXPECT_EQ(declined->declined->from, "bob@example.com");
+  written.clear();
+  tern::client::message::normal decline{.to = "lounge@rooms.example.com"};
+  decline.payload.emplace_back(tern::muc::user{.declined = tern::muc::decline{.to = "alice@example.com", .reason = "No thanks"}});
+  session.send(decline);
+  EXPECT_NE(written.find("<decline to=\"alice@example.com\""), std::string::npos);
+}
+
+TEST(Xep, RoomMembershipQueriesPreserveExistingAffiliations) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<iq type='result' id='tern-1'><query xmlns='http://jabber.org/protocol/muc#admin'>"
+      "<item jid='alice@example.com' affiliation='owner'/><item jid='bob@example.com' affiliation='outcast'/></query></iq>"
+      "<iq type='result' id='tern-2'/>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  const auto owners = session.try_request<tern::query::muc_affiliations>(
+      {.to = "lounge@rooms.example.com", .query = {.item = {.affiliation = "owner"}}});
+  ASSERT_TRUE(owners.has_value());
+  ASSERT_EQ(owners->items.size(), 2u);
+  EXPECT_TRUE(tern::muc::admission_of(owners->items.front()).allowed);
+  EXPECT_TRUE(tern::muc::admission_of(owners->items.back()).banned);
+  EXPECT_TRUE(session.try_request<tern::query::muc_affiliate>(
+      {.to = "lounge@rooms.example.com", .query = {.item = {.jid = "new@example.com", .affiliation = "member"}}}));
+  EXPECT_NE(written.find("muc#admin"), std::string::npos);
+  EXPECT_NE(written.find("jid=\"new@example.com\" affiliation=\"member\""), std::string::npos);
+}
