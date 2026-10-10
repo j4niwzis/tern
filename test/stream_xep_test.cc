@@ -186,3 +186,65 @@ TEST(Xep, Resume) {
                                        "<message>2</message>"))
       << script.written;
 }
+
+TEST(Xep, ReservedRoomConfigurationAndCancellation) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<iq type='result' id='tern-1' from='new@rooms.example.com'>"
+      "<query xmlns='http://jabber.org/protocol/muc#owner'><x xmlns='jabber:x:data' type='form'>"
+      "<field var='FORM_TYPE' type='hidden'><value>http://jabber.org/protocol/muc#roomconfig</value></field>"
+      "<field var='muc#roomconfig_roomname' type='text-single'><value>New room</value></field>"
+      "<field var='muc#roomconfig_membersonly' type='boolean'><value>0</value></field>"
+      "<field var='service#custom'><value>keep me</value></field></x></query></iq>"
+      "<iq type='result' id='tern-2' from='new@rooms.example.com'/>"
+      "<iq type='result' id='tern-3' from='new@rooms.example.com'/>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  auto configuration = session.try_request<tern::query::muc_configuration>({.to = "new@rooms.example.com"});
+  ASSERT_TRUE(configuration.has_value());
+  ASSERT_TRUE(configuration->form.has_value());
+  ASSERT_EQ(configuration->form->fields.size(), 4u);
+  EXPECT_EQ(tern::muc::kind_of(configuration->form->fields[1]).index(),
+            tern::muc::config_field_t(tern::muc::config_field::name{}).index());
+  auto form = *configuration->form;
+  form.type = "submit";
+  form.fields[2].value = {"1"};
+  EXPECT_TRUE(session.try_request<tern::query::muc_configure>({.to = "new@rooms.example.com", .query = {form}}));
+  EXPECT_NE(written.find("keep me"), std::string::npos);
+  EXPECT_TRUE(session.try_request<tern::query::muc_configure>(
+      {.to = "new@rooms.example.com", .query = {{.type = "cancel"}}}));
+  EXPECT_NE(written.find("type=\"cancel\""), std::string::npos);
+}
+
+TEST(Xep, MucCreationStatusIsReadAsFlags) {
+  const auto flags = tern::muc::flags_of(tern::muc::user{.statuses = {{"110"}, {"201"}, {"999"}}});
+  EXPECT_TRUE(flags.self);
+  EXPECT_TRUE(flags.created);
+  const auto other = tern::muc::flags_of(tern::muc::user{.statuses = {{"100"}}});
+  EXPECT_FALSE(other.self);
+  EXPECT_FALSE(other.created);
+}
+
+TEST(Xep, BookmarkPublicationRequiresPrivatePersistentStorage) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<iq type='result' id='tern-1'/><iq type='result' id='tern-2'/>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  written.clear();
+  EXPECT_TRUE(session.try_request<tern::query::bookmark_save>({.query = {
+      .publish = {.item = {.id = "lounge@rooms.example.com", .conference = tern::bookmarks::conference{
+          .name = "Lounge", .autojoin = "true", .nick = "alice"}}}}}));
+  EXPECT_NE(written.find("publish-options"), std::string::npos);
+  EXPECT_NE(written.find("pubsub#access_model"), std::string::npos);
+  EXPECT_NE(written.find("whitelist"), std::string::npos);
+  EXPECT_NE(written.find("pubsub#persist_items"), std::string::npos);
+  EXPECT_NE(written.find("<value>max</value>"), std::string::npos);
+  EXPECT_NE(written.find("<value>never</value>"), std::string::npos);
+  EXPECT_NE(written.find("lounge@rooms.example.com"), std::string::npos);
+  written.clear();
+  EXPECT_TRUE(session.try_request<tern::query::bookmark_remove>(
+      {.query = {.retract = {.item = {.id = "lounge@rooms.example.com"}}}}));
+  EXPECT_NE(written.find("<retract"), std::string::npos);
+  EXPECT_NE(written.find("notify=\"true\""), std::string::npos);
+}

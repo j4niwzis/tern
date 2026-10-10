@@ -1087,6 +1087,45 @@ struct sm_state {
   std::vector<std::string> unacked;  // the stanzas the server has not acknowledged, as written
 };
 
+// XEP-0045 owner queries use XEP-0004 forms. A missing form means the
+// service offers no configuration options; it is distinct from an empty form.
+namespace muc {
+inline constexpr std::string_view owner_namespace = "http://jabber.org/protocol/muc#owner";
+struct configuration { std::optional<data_form::form> form; };
+constexpr auto xml_schema(chevron::type<configuration>) {
+  using namespace chevron::members;
+  return chevron::schema<configuration>().name(owner_namespace, "query").members(child("x", data_form::form_namespace));
+}
+namespace config_field {
+struct form_type {}; struct name {}; struct description {}; struct persistent {};
+struct public_room {}; struct members_only {}; struct other {};
+}
+using config_field_t = spl::variant<config_field::form_type, config_field::name, config_field::description,
+    config_field::persistent, config_field::public_room, config_field::members_only, config_field::other>;
+// Read the registrar's field names once, before the application decides
+// which values to submit. Unknown service-specific fields retain their defaults.
+inline config_field_t kind_of(const data_form::field& field) {
+  static const std::unordered_map<std::string_view, config_field_t> kinds{
+      {"FORM_TYPE", config_field::form_type{}}, {"muc#roomconfig_roomname", config_field::name{}},
+      {"muc#roomconfig_roomdesc", config_field::description{}}, {"muc#roomconfig_persistentroom", config_field::persistent{}},
+      {"muc#roomconfig_publicroom", config_field::public_room{}}, {"muc#roomconfig_membersonly", config_field::members_only{}}};
+  const auto found = field.var ? kinds.find(*field.var) : kinds.end();
+  return found == kinds.end() ? config_field_t(config_field::other{}) : found->second;
+}
+struct status_flags { bool self = false, created = false; };
+inline status_flags flags_of(const user& presence) {
+  static const std::unordered_map<std::string_view, status_flags> codes{
+      {"110", {.self = true}}, {"201", {.created = true}}};
+  return std::ranges::fold_left(presence.statuses, status_flags{}, [](status_flags out, const status& one) {
+    if (const auto found = codes.find(one.code); found != codes.end()) {
+      out.self = out.self || found->second.self;
+      out.created = out.created || found->second.created;
+    }
+    return out;
+  });
+}
+}  // namespace muc
+
 namespace query {
 // XEP-0030.
 struct disco_info {
@@ -1106,6 +1145,24 @@ struct disco_items {
 constexpr auto xml_schema(chevron::type<disco_items>) {
   using namespace chevron::members;
   return chevron::schema<disco_items>().name(disco::items_namespace, "query").members(attribute());
+}
+// XEP-0045: request a reserved room's form, submit it, or cancel it
+// (a form whose type is "cancel"). An empty submit creates an instant room.
+struct muc_configuration {
+  using kind = tern::get;
+  using answer = tern::muc::configuration;
+};
+constexpr auto xml_schema(chevron::type<muc_configuration>) {
+  return chevron::schema<muc_configuration>().name(muc::owner_namespace, "query");
+}
+struct muc_configure {
+  using kind = tern::set;
+  using answer = void;
+  data_form::form form{.type = "submit"};
+};
+constexpr auto xml_schema(chevron::type<muc_configure>) {
+  using namespace chevron::members;
+  return chevron::schema<muc_configure>().name(muc::owner_namespace, "query").members(child("x", data_form::form_namespace));
 }
 // XEP-0280.
 struct carbons_enable {
@@ -1138,6 +1195,57 @@ struct bookmarks {
 constexpr auto xml_schema(chevron::type<bookmarks>) {
   using namespace chevron::members;
   return chevron::schema<bookmarks>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(child("items"));
+}
+
+// XEP-0402 publication must require private, persistent storage. Never
+// publish a bookmark without the XEP-0060 publish-options preconditions.
+struct bookmark_publish {
+  std::string node{tern::bookmarks::bookmarks_namespace};
+  tern::bookmarks::item item;
+};
+constexpr auto xml_schema(chevron::type<bookmark_publish>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmark_publish>().name(tern::bookmarks::pubsub_namespace, "publish").members(attribute(), child("item"));
+}
+struct bookmark_options {
+  data_form::form form{.type = "submit", .fields = {
+      {.var = "FORM_TYPE", .type = "hidden", .value = {"http://jabber.org/protocol/pubsub#publish-options"}},
+      {.var = "pubsub#persist_items", .value = {"true"}},
+      {.var = "pubsub#max_items", .value = {"max"}},
+      {.var = "pubsub#send_last_published_item", .value = {"never"}},
+      {.var = "pubsub#access_model", .value = {"whitelist"}}}};
+};
+constexpr auto xml_schema(chevron::type<bookmark_options>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmark_options>().name(tern::bookmarks::pubsub_namespace, "publish-options").members(child("x", data_form::form_namespace));
+}
+struct bookmark_save {
+  using kind = tern::set;
+  using answer = void;
+  bookmark_publish publish;
+  bookmark_options options;
+};
+constexpr auto xml_schema(chevron::type<bookmark_save>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmark_save>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(child("publish"), child("publish-options"));
+}
+struct bookmark_retract {
+  std::string node{tern::bookmarks::bookmarks_namespace};
+  std::string notify{"true"};
+  tern::bookmarks::item item;
+};
+constexpr auto xml_schema(chevron::type<bookmark_retract>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmark_retract>().name(tern::bookmarks::pubsub_namespace, "retract").members(attribute(), attribute(), child("item"));
+}
+struct bookmark_remove {
+  using kind = tern::set;
+  using answer = void;
+  bookmark_retract retract;
+};
+constexpr auto xml_schema(chevron::type<bookmark_remove>) {
+  using namespace chevron::members;
+  return chevron::schema<bookmark_remove>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(child("retract"));
 }
 
 }  // namespace query
@@ -1273,7 +1381,7 @@ using standard = protocol<queries<roster, query::version, query::ping, query::di
 // chat markers (XEP-0333), corrections (XEP-0308), retractions (XEP-0424)
 // and replies (XEP-0461), on top of the standard protocol.
 using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
-                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub>,
+                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
                                    muc::user, markers::markable, markers::displayed, corrections::replace,
                                    retractions::retract, replies::reply>>;
