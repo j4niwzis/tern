@@ -346,6 +346,54 @@ TEST(Xep, BookmarkExtensionsAndLiveNotificationsAreTyped) {
   EXPECT_FALSE(tern::notifications::selected(notify)->on);
 }
 
+TEST(Xep, VcardProfilesAndPronounsUseTypedPepPayloads) {
+  const std::string xml = R"(<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+    <items node='urn:xmpp:vcard4'><item id='current'>
+      <vcard xmlns='urn:ietf:params:xml:ns:vcard-4.0'>
+        <fn><text>Juliet</text></fn><note><text>Biography</text></note>
+        <pronouns><parameters><language><language-tag>en</language-tag></language>
+          <pref><integer>1</integer></pref></parameters><text>she/her</text></pronouns>
+        <email><text>juliet@example.com</text></email>
+      </vcard></item></items></pubsub>)";
+  auto answer = chevron::read<tern::bookmarks::pubsub>(std::string_view(xml) | chevron::events);
+  ASSERT_TRUE(answer);
+  ASSERT_TRUE(answer->items);
+  ASSERT_EQ(answer->items->items.size(), 1u);
+  const auto& item = answer->items->items.front();
+  EXPECT_FALSE(item.conference);
+  ASSERT_TRUE(item.profile);
+  ASSERT_EQ(item.profile->properties.size(), 4u);
+  const auto& pronouns = item.profile->properties[2].as<tern::vcard4::pronouns>();
+  EXPECT_EQ(pronouns.text, "she/her");
+  ASSERT_TRUE(pronouns.params);
+  ASSERT_TRUE(pronouns.params->language);
+  EXPECT_EQ(pronouns.params->language->tag, "en");
+  ASSERT_TRUE(pronouns.params->preference);
+  EXPECT_EQ(pronouns.params->preference->value, 1);
+  auto published = tern::query::profile_save{.publish = {.item = {*item.profile}}};
+  const auto written = std::ranges::to<std::string>(chevron::to_xml(published));
+  EXPECT_NE(written.find("urn:xmpp:vcard4"), std::string::npos);
+  EXPECT_NE(written.find("juliet@example.com"), std::string::npos);
+  const auto card_xml = std::ranges::to<std::string>(chevron::to_xml(*item.profile));
+  auto card = chevron::read<tern::vcard4::card>(std::string_view(card_xml) | chevron::events);
+  ASSERT_TRUE(card);
+  EXPECT_EQ(card->properties.size(), 4u);
+}
+
+TEST(Xep, LegacyProfilePreservesUnrecognisedContactFields) {
+  const std::string xml = R"(<vCard xmlns='vcard-temp'><FN>Juliet</FN>
+    <DESC>Biography</DESC><TEL><NUMBER>123</NUMBER></TEL></vCard>)";
+  auto card = chevron::read<tern::vcard_temp::card>(std::string_view(xml) | chevron::events);
+  ASSERT_TRUE(card);
+  EXPECT_EQ(card->name, "Juliet");
+  EXPECT_EQ(card->description, "Biography");
+  ASSERT_EQ(card->other.size(), 1u);
+  auto save = tern::query::legacy_profile_save{card->name, card->nickname, "Edited", card->other};
+  const auto written = std::ranges::to<std::string>(chevron::to_xml(save));
+  EXPECT_NE(written.find("123"), std::string::npos);
+  EXPECT_NE(written.find("Edited"), std::string::npos);
+}
+
 TEST(Xep, HttpUploadSlotAndSafeHeaders) {
   const std::string server = logged_in + bind_features + bind_result +
       "<iq type='result' id='tern-1'><slot xmlns='urn:xmpp:http:upload:0'>"

@@ -829,6 +829,86 @@ inline void choose(notify& settings, decision desired) {
 }
 }  // namespace notifications
 
+// XEP-0292 vCard4 profiles on PEP. Unrecognised properties are preserved
+// without inspection so changing a biography does not erase contact data.
+namespace vcard4 {
+inline constexpr std::string_view ns = "urn:ietf:params:xml:ns:vcard-4.0", node = "urn:xmpp:vcard4";
+struct language_parameter { std::string tag; };
+constexpr auto xml_schema(chevron::type<language_parameter>) {
+  return chevron::schema<language_parameter>().name(ns, "language").members(chevron::members::child_text("language-tag"));
+}
+struct preference_parameter { int value = 1; };
+constexpr auto xml_schema(chevron::type<preference_parameter>) {
+  return chevron::schema<preference_parameter>().name(ns, "pref").members(chevron::members::child_text("integer"));
+}
+struct parameters {
+  std::optional<language_parameter> language;
+  std::optional<preference_parameter> preference;
+  std::vector<chevron::any> other;
+};
+constexpr auto xml_schema(chevron::type<parameters>) {
+  using namespace chevron::members;
+  return chevron::schema<parameters>().name(ns, "parameters").members(child("language"), child("pref"), _);
+}
+struct name { std::string text; std::optional<parameters> params; };
+constexpr auto xml_schema(chevron::type<name>) {
+  using namespace chevron::members;
+  return chevron::schema<name>().name(ns, "fn").members(child_text("text"), child("parameters"));
+}
+struct nickname { std::vector<std::string> text; std::optional<parameters> params; };
+constexpr auto xml_schema(chevron::type<nickname>) {
+  using namespace chevron::members;
+  return chevron::schema<nickname>().name(ns, "nickname").members(child_text("text"), child("parameters"));
+}
+struct note { std::string text; std::optional<parameters> params; };
+constexpr auto xml_schema(chevron::type<note>) {
+  using namespace chevron::members;
+  return chevron::schema<note>().name(ns, "note").members(child_text("text"), child("parameters"));
+}
+// RFC9554 PRONOUNS uses text, LANGUAGE and PREF under RFC6351's
+// normal XML mapping; it needs no private XMPP extension namespace.
+struct pronouns { std::string text; std::optional<parameters> params; };
+constexpr auto xml_schema(chevron::type<pronouns>) {
+  using namespace chevron::members;
+  return chevron::schema<pronouns>().name(ns, "pronouns").members(child_text("text"), child("parameters"));
+}
+struct language { std::string tag; };
+constexpr auto xml_schema(chevron::type<language>) {
+  return chevron::schema<language>().name(ns, "language").members(chevron::members::child_text("language-tag"));
+}
+struct photo { std::string uri; std::optional<parameters> params; };
+constexpr auto xml_schema(chevron::type<photo>) {
+  using namespace chevron::members;
+  return chevron::schema<photo>().name(ns, "photo").members(child_text("uri"), child("parameters"));
+}
+struct card {
+  std::vector<chevron::tagged<name, nickname, note, pronouns, language, photo, chevron::any>> properties;
+};
+constexpr auto xml_schema(chevron::type<card>) {
+  return chevron::schema<card>().name(ns, "vcard").members(chevron::members::_);
+}
+}
+namespace vcard_temp {
+struct card {
+  std::optional<std::string> name, nickname, description;
+  std::vector<chevron::any> other;
+};
+constexpr auto xml_schema(chevron::type<card>) {
+  using namespace chevron::members;
+  return chevron::schema<card>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), _);
+}
+}
+namespace pep_node {
+struct bookmarks {}; struct profile {}; struct other {};
+}
+using pep_node_t = spl::variant<pep_node::bookmarks, pep_node::profile, pep_node::other>;
+inline pep_node_t pep_node_of(std::string_view name) {
+  static const std::map<std::string_view, pep_node_t> known{
+      {"urn:xmpp:bookmarks:1", pep_node::bookmarks{}}, {vcard4::node, pep_node::profile{}}};
+  const auto found = known.find(name);
+  return found == known.end() ? pep_node_t{pep_node::other{}} : found->second;
+}
+
 // XEP-0402: the rooms one keeps, as PEP items of urn:xmpp:bookmarks:1, each
 // item's id the room's JID.
 namespace bookmarks {
@@ -858,10 +938,11 @@ constexpr auto xml_schema(chevron::type<conference>) {
 struct item {
   std::string id;
   std::optional<bookmarks::conference> conference;
+  std::optional<vcard4::card> profile;
 };
 constexpr auto xml_schema(chevron::type<item>) {
   using namespace chevron::members;
-  return chevron::schema<item>().name(pubsub_namespace, "item").members(attribute(), child("conference"));
+  return chevron::schema<item>().name(pubsub_namespace, "item").members(attribute(), child("conference", bookmarks_namespace), child("vcard", vcard4::ns));
 }
 
 struct item_list {
@@ -886,10 +967,11 @@ inline constexpr std::string_view event_namespace = "http://jabber.org/protocol/
 struct published {
   std::string id;
   std::optional<bookmarks::conference> conference;
+  std::optional<vcard4::card> profile;
 };
 constexpr auto xml_schema(chevron::type<published>) {
   using namespace chevron::members;
-  return chevron::schema<published>().name(event_namespace, "item").members(attribute(), child("conference", bookmarks_namespace));
+  return chevron::schema<published>().name(event_namespace, "item").members(attribute(), child("conference", bookmarks_namespace), child("vcard", vcard4::ns));
 }
 struct retracted { std::string id; };
 constexpr auto xml_schema(chevron::type<retracted>) {
@@ -1488,6 +1570,50 @@ constexpr auto xml_schema(chevron::type<bookmarks>) {
   return chevron::schema<bookmarks>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(child("items"));
 }
 
+struct profile_items {
+  using kind = tern::get;
+  using answer = tern::bookmarks::pubsub;
+  bookmarks_items items{std::string(vcard4::node)};
+};
+constexpr auto xml_schema(chevron::type<profile_items>) {
+  return chevron::schema<profile_items>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(chevron::members::child("items"));
+}
+struct profile_publish_item { vcard4::card profile; };
+constexpr auto xml_schema(chevron::type<profile_publish_item>) {
+  return chevron::schema<profile_publish_item>().name(tern::bookmarks::pubsub_namespace, "item").members(chevron::members::child("vcard", vcard4::ns));
+}
+struct profile_publish {
+  std::string node{vcard4::node};
+  profile_publish_item item;
+};
+constexpr auto xml_schema(chevron::type<profile_publish>) {
+  using namespace chevron::members;
+  return chevron::schema<profile_publish>().name(tern::bookmarks::pubsub_namespace, "publish").members(attribute(), child("item"));
+}
+struct profile_save {
+  using kind = tern::set;
+  using answer = void;
+  profile_publish publish;
+};
+constexpr auto xml_schema(chevron::type<profile_save>) {
+  return chevron::schema<profile_save>().name(tern::bookmarks::pubsub_namespace, "pubsub").members(chevron::members::child("publish"));
+}
+struct legacy_profile_get {
+  using kind = tern::get;
+  using answer = vcard_temp::card;
+};
+constexpr auto xml_schema(chevron::type<legacy_profile_get>) { return chevron::schema<legacy_profile_get>().name("vcard-temp", "vCard"); }
+struct legacy_profile_save {
+  using kind = tern::set;
+  using answer = void;
+  std::optional<std::string> name, nickname, description;
+  std::vector<chevron::any> other;
+};
+constexpr auto xml_schema(chevron::type<legacy_profile_save>) {
+  using namespace chevron::members;
+  return chevron::schema<legacy_profile_save>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), _);
+}
+
 // XEP-0402 publication must require private, persistent storage. Never
 // publish a bookmark without the XEP-0060 publish-options preconditions.
 struct bookmark_publish {
@@ -1672,7 +1798,7 @@ using standard = protocol<queries<roster, query::version, query::ping, query::di
 // chat markers (XEP-0333), corrections (XEP-0308), retractions (XEP-0424)
 // and replies (XEP-0461), on top of the standard protocol.
 using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
-                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration, muc::affiliations, upload::slot>,
+                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, vcard_temp::card, muc::configuration, muc::affiliations, upload::slot>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
                                    muc::user, markers::markable, markers::displayed, corrections::replace,
                                    retractions::retract, replies::reply, bookmarks::event, chat_states::active, chat_states::composing, chat_states::paused, chat_states::inactive, chat_states::gone, files::oob, files::sharing, files::fallback>>;
