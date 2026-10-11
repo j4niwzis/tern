@@ -577,8 +577,58 @@ constexpr auto xml_schema(chevron::type<delay>) {
 
 // XEP-0297: a message forwarded, and when it was sent. What the message
 // carries is kept as it came.
+namespace chat_states {
+inline constexpr std::string_view ns = "http://jabber.org/protocol/chatstates";
+struct active {};
+constexpr auto xml_schema(chevron::type<active>) { return chevron::schema<active>().name(ns, "active"); }
+struct composing {};
+constexpr auto xml_schema(chevron::type<composing>) { return chevron::schema<composing>().name(ns, "composing"); }
+struct paused {};
+constexpr auto xml_schema(chevron::type<paused>) { return chevron::schema<paused>().name(ns, "paused"); }
+struct inactive {};
+constexpr auto xml_schema(chevron::type<inactive>) { return chevron::schema<inactive>().name(ns, "inactive"); }
+struct gone {};
+constexpr auto xml_schema(chevron::type<gone>) { return chevron::schema<gone>().name(ns, "gone"); }
+}
+namespace files {
+inline constexpr std::string_view ns = "urn:xmpp:sfs:0", metadata_ns = "urn:xmpp:file:metadata:0", url_ns = "http://jabber.org/protocol/url-data";
+struct oob { std::string url; std::optional<std::string> description; };
+constexpr auto xml_schema(chevron::type<oob>) {
+  using namespace chevron::members;
+  return chevron::schema<oob>().name("jabber:x:oob", "x").members(child_text("url"), child_text("desc"));
+}
+struct metadata {
+  std::optional<std::string> media_type, name, size, width, height, desc;
+};
+constexpr auto xml_schema(chevron::type<metadata>) {
+  using namespace chevron::members;
+  return chevron::schema<metadata>().name(metadata_ns, "file").members(child_text("media-type"), child_text(), child_text(), child_text(), child_text(), child_text());
+}
+struct url_data { std::string target; };
+constexpr auto xml_schema(chevron::type<url_data>) {
+  using namespace chevron::members;
+  return chevron::schema<url_data>().name(url_ns, "url-data").members(attribute());
+}
+struct sources { std::vector<url_data> urls; };
+constexpr auto xml_schema(chevron::type<sources>) {
+  using namespace chevron::members;
+  return chevron::schema<sources>().name(ns, "sources").members(child("url-data", url_ns));
+}
+struct sharing { metadata file; files::sources sources; std::optional<std::string> disposition; };
+constexpr auto xml_schema(chevron::type<sharing>) {
+  using namespace chevron::members;
+  return chevron::schema<sharing>().name(ns, "file-sharing").members(child("file", metadata_ns), child("sources"), attribute());
+}
+struct fallback_body {};
+constexpr auto xml_schema(chevron::type<fallback_body>) { return chevron::schema<fallback_body>().name("urn:xmpp:fallback:0", "body"); }
+struct fallback { std::string for_; fallback_body body; };
+constexpr auto xml_schema(chevron::type<fallback>) {
+  using namespace chevron::members;
+  return chevron::schema<fallback>().name("urn:xmpp:fallback:0", "fallback").members(attribute("for"), child("body"));
+}
+}
 namespace forward {
-using plain = chevron::tagged<chevron::any>;
+using plain = chevron::tagged<files::oob, files::sharing, files::fallback, chevron::any>;
 using message = chevron::tagged<basic::message_normal<plain>, basic::message_chat<plain>,
                                 basic::message_groupchat<plain>, basic::message_headline<plain>,
                                 basic::message_error<plain>>;
@@ -1121,10 +1171,11 @@ struct info {
   std::optional<std::string> node;
   std::vector<disco::identity> identities;
   std::vector<disco::feature> features;
+  std::vector<data_form::form> forms;
 };
 constexpr auto xml_schema(chevron::type<info>) {
   using namespace chevron::members;
-  return chevron::schema<info>().name(info_namespace, "query").members(attribute(), child("identity"), child("feature"));
+  return chevron::schema<info>().name(info_namespace, "query").members(attribute(), child("identity"), child("feature"), child("x", data_form::form_namespace));
 }
 struct item {
   std::string jid;
@@ -1233,10 +1284,11 @@ inline constexpr std::string_view owner_namespace = "http://jabber.org/protocol/
 inline constexpr std::string_view admin_namespace = "http://jabber.org/protocol/muc#admin";
 struct affiliation_item {
   std::optional<std::string> jid, affiliation;
+  std::optional<std::string> nick, role;
 };
 constexpr auto xml_schema(chevron::type<affiliation_item>) {
   using namespace chevron::members;
-  return chevron::schema<affiliation_item>().name(admin_namespace, "item").members(attribute(), attribute());
+  return chevron::schema<affiliation_item>().name(admin_namespace, "item").members(attribute(), attribute(), attribute(), attribute());
 }
 struct affiliations { std::vector<affiliation_item> items; };
 constexpr auto xml_schema(chevron::type<affiliations>) {
@@ -1286,7 +1338,54 @@ inline status_flags flags_of(const user& presence) {
 }
 }  // namespace muc
 
+// XEP-0363 and XEP-0066/XEP-0447 file sharing.
+namespace upload {
+inline constexpr std::string_view ns = "urn:xmpp:http:upload:0";
+struct header { std::string name, value; };
+constexpr auto xml_schema(chevron::type<header>) {
+  using namespace chevron::members;
+  return chevron::schema<header>().name(ns, "header").members(attribute(), text());
+}
+struct put { std::string url; std::vector<header> headers; };
+constexpr auto xml_schema(chevron::type<put>) {
+  using namespace chevron::members;
+  return chevron::schema<put>().name(ns, "put").members(attribute(), child("header"));
+}
+struct get { std::string url; };
+constexpr auto xml_schema(chevron::type<get>) {
+  using namespace chevron::members;
+  return chevron::schema<get>().name(ns, "get").members(attribute());
+}
+struct slot { upload::put put; upload::get get; };
+constexpr auto xml_schema(chevron::type<slot>) {
+  using namespace chevron::members;
+  return chevron::schema<slot>().name(ns, "slot").members(child("put"), child("get"));
+}
+// Only these headers may be supplied by a service. Preserve repeated values and order.
+inline std::vector<std::pair<std::string, std::string>> headers_of(const slot& slot) {
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const auto& h : slot.put.headers) {
+    std::string name, value;
+    for (unsigned char c : h.name) if (c != '\r' && c != '\n') name += static_cast<char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+    if (name != "authorization" && name != "cookie" && name != "expires") continue;
+    for (char c : h.value) if (c != '\r' && c != '\n') value += c;
+    out.emplace_back(std::move(name), std::move(value));
+  }
+  return out;
+}
+}
+
 namespace query {
+struct upload_slot {
+  using kind = tern::get;
+  using answer = upload::slot;
+  std::string filename, size;
+  std::optional<std::string> content_type;
+};
+constexpr auto xml_schema(chevron::type<upload_slot>) {
+  using namespace chevron::members;
+  return chevron::schema<upload_slot>().name(upload::ns, "request").members(attribute(), attribute(), attribute("content-type"));
+}
 // XEP-0030.
 struct disco_info {
   using kind = tern::get;
@@ -1332,6 +1431,20 @@ constexpr auto xml_schema(chevron::type<muc_affiliate>) {
 }
 constexpr auto xml_schema(chevron::type<muc_configuration>) {
   return chevron::schema<muc_configuration>().name(muc::owner_namespace, "query");
+}
+struct muc_destroy_body { std::optional<std::string> reason; };
+constexpr auto xml_schema(chevron::type<muc_destroy_body>) {
+  using namespace chevron::members;
+  return chevron::schema<muc_destroy_body>().name(muc::owner_namespace, "destroy").members(child_text());
+}
+struct muc_destroy {
+  using kind = tern::set;
+  using answer = void;
+  muc_destroy_body destroy;
+};
+constexpr auto xml_schema(chevron::type<muc_destroy>) {
+  using namespace chevron::members;
+  return chevron::schema<muc_destroy>().name(muc::owner_namespace, "query").members(child("destroy"));
 }
 struct muc_configure {
   using kind = tern::set;
@@ -1559,10 +1672,10 @@ using standard = protocol<queries<roster, query::version, query::ping, query::di
 // chat markers (XEP-0333), corrections (XEP-0308), retractions (XEP-0424)
 // and replies (XEP-0461), on top of the standard protocol.
 using client = protocol<queries<roster, query::version, query::ping, query::disco_info, query::disco_items>,
-                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration, muc::affiliations>,
+                        answers<roster, version, disco::info, disco::items, mam::fin, bookmarks::pubsub, muc::configuration, muc::affiliations, upload::slot>,
                         extensions<delay, caps::c, carbons::received, carbons::sent, mam::result, muc::join,
                                    muc::user, markers::markable, markers::displayed, corrections::replace,
-                                   retractions::retract, replies::reply, bookmarks::event>>;
+                                   retractions::retract, replies::reply, bookmarks::event, chat_states::active, chat_states::composing, chat_states::paused, chat_states::inactive, chat_states::gone, files::oob, files::sharing, files::fallback>>;
 
 // The standard protocol's stanzas, by their plain names.
 namespace message {

@@ -345,3 +345,64 @@ TEST(Xep, BookmarkExtensionsAndLiveNotificationsAreTyped) {
   const auto& notify = item.conference->extensions->children.front().as<tern::notifications::notify>();
   EXPECT_FALSE(tern::notifications::selected(notify)->on);
 }
+
+TEST(Xep, HttpUploadSlotAndSafeHeaders) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<iq type='result' id='tern-1'><slot xmlns='urn:xmpp:http:upload:0'>"
+      "<put url='https://upload.example.org/file.gif'><header name='Authorization'>Basic abc</header>"
+      "<header name='COOKIE'>a=1</header><header name='Cookie'>b=2</header>"
+      "<header name='Host'>evil.example.org</header></put><get url='https://cdn.example.org/file.gif'/></slot></iq>"
+      "</stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  const auto answer = session.try_request<tern::query::upload_slot>({.to = "upload.example.org",
+      .query = {.filename = "file.gif", .size = "42", .content_type = "image/gif"}});
+  ASSERT_TRUE(answer.has_value());
+  EXPECT_EQ(answer->get.url, "https://cdn.example.org/file.gif");
+  const auto headers = tern::upload::headers_of(*answer);
+  ASSERT_EQ(headers.size(), 3u);
+  EXPECT_EQ(headers[0].first, "authorization");
+  EXPECT_EQ(headers[1].second, "a=1");
+  EXPECT_EQ(headers[2].second, "b=2");
+  EXPECT_NE(written.find("content-type=\"image/gif\""), std::string::npos);
+  EXPECT_NE(written.find("size=\"42\""), std::string::npos);
+  const auto clean = tern::upload::headers_of({.put = {.url = "https://upload.example.org", .headers = {{"Co\r\nokie", "x\r\ny"}}}});
+  ASSERT_EQ(clean.size(), 1u);
+  EXPECT_EQ(clean.front().second, "xy");
+}
+
+TEST(Xep, MucRolesAddressNickInsteadOfRoomJid) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<iq type='result' id='tern-1'/></stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  EXPECT_TRUE(session.try_request<tern::query::muc_affiliate>({.to = "room@conference.example.org",
+      .query = {.item = {.nick = "Juliet", .role = "none"}}}));
+  EXPECT_NE(written.find("nick=\"Juliet\" role=\"none\""), std::string::npos);
+}
+
+TEST(Xep, GifMetadataSurvivesArchiveForwarding) {
+  const std::string server = logged_in + bind_features + bind_result +
+      "<message from='example.com'><result xmlns='urn:xmpp:mam:2' id='archived'>"
+      "<forwarded xmlns='urn:xmpp:forward:0'><message xmlns='jabber:client' from='juliet@example.org' type='chat'>"
+      "<file-sharing xmlns='urn:xmpp:sfs:0'><file xmlns='urn:xmpp:file:metadata:0'>"
+      "<media-type>image/gif</media-type><name>dance.gif</name><size>42</size></file>"
+      "<sources><url-data xmlns='http://jabber.org/protocol/url-data' target='https://cdn.example.org/dance.gif'/></sources>"
+      "</file-sharing></message></forwarded></result></message></stream:stream>";
+  std::string_view input = server;
+  std::string written;
+  auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
+  auto inbox = session.open_inbox();
+  const auto received = inbox.try_next();
+  ASSERT_TRUE(received && *received);
+  const auto& stanza = spl::get<tern::client::message::normal>(spl::get<tern::client::message_t>(**received));
+  const auto& result = stanza.payload.front().as<tern::mam::result>();
+  ASSERT_TRUE(result.forwarded.message);
+  const auto& message = result.forwarded.message->as<tern::basic::message_chat<tern::forward::plain>>();
+  const auto& sharing = message.payload.front().as<tern::files::sharing>();
+  EXPECT_EQ(sharing.file.media_type, "image/gif");
+  ASSERT_EQ(sharing.sources.urls.size(), 1u);
+  EXPECT_EQ(sharing.sources.urls.front().target, "https://cdn.example.org/dance.gif");
+}
