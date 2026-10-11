@@ -352,7 +352,8 @@ TEST(Xep, VcardProfilesAndPronounsUseTypedPepPayloads) {
       <vcard xmlns='urn:ietf:params:xml:ns:vcard-4.0'>
         <fn><text>Juliet</text></fn><note><text>Biography</text></note>
         <pronouns><parameters><language><language-tag>en</language-tag></language>
-          <pref><integer>1</integer></pref></parameters><text>she/her</text></pronouns>
+          <pref><integer>1</integer></pref><type><text>home</text></type>
+          </parameters><text>she/her</text></pronouns>
         <email><text>juliet@example.com</text></email>
       </vcard></item></items></pubsub>)";
   auto answer = chevron::read<tern::bookmarks::pubsub>(std::string_view(xml) | chevron::events);
@@ -370,6 +371,7 @@ TEST(Xep, VcardProfilesAndPronounsUseTypedPepPayloads) {
   EXPECT_EQ(pronouns.params->language->tag, "en");
   ASSERT_TRUE(pronouns.params->preference);
   EXPECT_EQ(pronouns.params->preference->value, 1);
+  ASSERT_EQ(pronouns.params->other.size(), 1u);
   auto published = tern::query::profile_save{.publish = {.item = {*item.profile}}};
   const auto written = std::ranges::to<std::string>(chevron::to_xml(published));
   EXPECT_NE(written.find("urn:xmpp:vcard4"), std::string::npos);
@@ -378,6 +380,9 @@ TEST(Xep, VcardProfilesAndPronounsUseTypedPepPayloads) {
   auto card = chevron::read<tern::vcard4::card>(std::string_view(card_xml) | chevron::events);
   ASSERT_TRUE(card);
   EXPECT_EQ(card->properties.size(), 4u);
+  const auto& back = card->properties[2].as<tern::vcard4::pronouns>();
+  ASSERT_TRUE(back.params);
+  EXPECT_EQ(back.params->other.size(), 1u);
 }
 
 TEST(Xep, LegacyProfilePreservesUnrecognisedContactFields) {

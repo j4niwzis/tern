@@ -848,7 +848,7 @@ struct parameters {
 };
 constexpr auto xml_schema(chevron::type<parameters>) {
   using namespace chevron::members;
-  return chevron::schema<parameters>().name(ns, "parameters").members(child("language"), child("pref"), _);
+  return chevron::schema<parameters>().name(ns, "parameters").members(child("language"), child("pref"), unknown_children());
 }
 struct name { std::string text; std::optional<parameters> params; };
 constexpr auto xml_schema(chevron::type<name>) {
@@ -895,7 +895,7 @@ struct card {
 };
 constexpr auto xml_schema(chevron::type<card>) {
   using namespace chevron::members;
-  return chevron::schema<card>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), _);
+  return chevron::schema<card>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), unknown_children());
 }
 }
 namespace pep_node {
@@ -1611,7 +1611,7 @@ struct legacy_profile_save {
 };
 constexpr auto xml_schema(chevron::type<legacy_profile_save>) {
   using namespace chevron::members;
-  return chevron::schema<legacy_profile_save>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), _);
+  return chevron::schema<legacy_profile_save>().name("vcard-temp", "vCard").members(child_text("FN"), child_text("NICKNAME"), child_text("DESC"), unknown_children());
 }
 
 // XEP-0402 publication must require private, persistent storage. Never
