@@ -289,9 +289,9 @@ TEST(Xep, MediatedRoomInvitationsAndDeclines) {
 
 TEST(Xep, RoomMembershipQueriesPreserveExistingAffiliations) {
   const std::string server = logged_in + bind_features + bind_result +
-      "<iq type='result' id='tern-1'><query xmlns='http://jabber.org/protocol/muc#admin'>"
+      "<iq type='result' id='tern-1' from='lounge@rooms.example.com'><query xmlns='http://jabber.org/protocol/muc#admin'>"
       "<item jid='alice@example.com' affiliation='owner'/><item jid='bob@example.com' affiliation='outcast'/></query></iq>"
-      "<iq type='result' id='tern-2'/>";
+      "<iq type='result' id='tern-2' from='lounge@rooms.example.com'/>";
   std::string_view input = server;
   std::string written;
   auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());
@@ -401,7 +401,7 @@ TEST(Xep, LegacyProfilePreservesUnrecognisedContactFields) {
 
 TEST(Xep, HttpUploadSlotAndSafeHeaders) {
   const std::string server = logged_in + bind_features + bind_result +
-      "<iq type='result' id='tern-1'><slot xmlns='urn:xmpp:http:upload:0'>"
+      "<iq type='result' id='tern-1' from='upload.example.org'><slot xmlns='urn:xmpp:http:upload:0'>"
       "<put url='https://upload.example.org/file.gif'><header name='Authorization'>Basic abc</header>"
       "<header name='COOKIE'>a=1</header><header name='Cookie'>b=2</header>"
       "<header name='Host'>evil.example.org</header></put><get url='https://cdn.example.org/file.gif'/></slot></iq>"
@@ -427,7 +427,7 @@ TEST(Xep, HttpUploadSlotAndSafeHeaders) {
 
 TEST(Xep, MucRolesAddressNickInsteadOfRoomJid) {
   const std::string server = logged_in + bind_features + bind_result +
-      "<iq type='result' id='tern-1'/></stream:stream>";
+      "<iq type='result' id='tern-1' from='room@conference.example.org'/></stream:stream>";
   std::string_view input = server;
   std::string written;
   auto session = tern::connect<tern::client>(input, std::back_inserter(written), plain());

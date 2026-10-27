@@ -23,6 +23,16 @@ cme_options(googletest-modules
   "BUILD_GMOCK OFF" "INSTALL_GTEST OFF" "gtest_build_modules ON"
   "gtest_build_tests OFF" "gtest_build_samples OFF")
 cme_find_package(GTest REQUIRED)
+# Keep the test modules on the same standard as tern and its std module.
+foreach(target IN ITEMS gtest gtest_main)
+  if(TARGET ${target})
+    get_target_property(aliased ${target} ALIASED_TARGET)
+    if(aliased)
+      set(target ${aliased})
+    endif()
+    set_target_properties(${target} PROPERTIES CXX_STANDARD ${CMAKE_CXX_STANDARD} CXX_STANDARD_REQUIRED ON)
+  endif()
+endforeach()
 # A copy from a prefix names it GTest::gtest_main, and one built here
 # gtest_main.
 if(TARGET GTest::gtest_main)
